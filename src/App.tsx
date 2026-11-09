@@ -189,7 +189,7 @@ function newsRun(): Run {
     names: NEWS.map((n: string, i: number) => `${n} #${210 + i}`), labels: ["archive", "digest", "need you"], counts: [29, 8, 3] };
 }
 
-function Tidepost() {
+function Tidepost({ bare = false }: { bare?: boolean }) {
   const t = useGrokTheme();
   const [threads, setThreads] = useState<Thread[]>(seed);
   const [sel, setSel] = useState<string>("t1");
@@ -375,7 +375,7 @@ function Tidepost() {
   const decided = d ? Object.keys(d.decisions).length : 0;
 
   return (
-    <div tabIndex={0} onKeyDown={onKey} style={{ border: `1px solid ${t.border.default}`, borderRadius: t.radius.xl, overflow: "hidden", background: t.bg.base, fontFamily: t.font.family, outline: "none" }}>
+    <div tabIndex={0} onKeyDown={onKey} style={{ border: bare ? "none" : `1px solid ${t.border.default}`, borderRadius: bare ? 0 : t.radius.xl, overflow: "hidden", background: t.bg.base, fontFamily: t.font.family, outline: "none", minHeight: bare ? "100vh" : undefined }}>
       {/* top bar */}
       <div style={{ ...row, justifyContent: "space-between", padding: "10px 14px", borderBottom: `1px solid ${t.border.default}`, gap: 12 }}>
         <div style={row}>
@@ -687,6 +687,9 @@ const PATTERNS: string[][] = [
 ];
 
 export default function App() {
+  if (window.location.pathname.replace(/\/$/, "") === "/demo") {
+    return <Tidepost bare />;
+  }
   return (
     <Page width="full" title="Tidepost: an email client built like an agent workbench" summary="A concept email client whose threads behave like agent sessions: live status, plans you approve step by step, drafts reviewed as diffs with checkpoints, and bulk work running in the background. Patterns come from open-source agent tools; nothing auto-sends.">
       <Callout tone="info">Concept prototype. Tidepost is a made-up name, every person, thread and amount is example data, and sending is simulated behind an explicit confirm.</Callout>
