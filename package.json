@@ -1,24 +1,48 @@
 {
   "name": "tidepost",
   "private": true,
-  "version": "0.0.0",
-  "description": "Experiment: an email client with an agent-workbench interaction model (prototype)",
+  "version": "0.1.0",
+  "description": "Tidepost: a keyboard-first email client for Gmail and Outlook, built like an agent workbench",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch --clear-screen=false server/index.ts",
+    "dev:web": "vite",
+    "build": "tsc -p . && vite build",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "verify": "npm run build && node scripts/verify.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.7.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@hono/node-server": "^2.1.6",
+    "@tanstack/react-query": "^5.107.1",
+    "@tanstack/react-virtual": "^3.14.26",
+    "dompurify": "^3.4.17",
+    "hono": "^4.13.17",
+    "lucide-react": "^1.70.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "playwright": "^1.65.0",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.3.7"
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }
