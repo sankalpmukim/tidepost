@@ -14343,7 +14343,8 @@ var DEFAULT_SETTINGS = {
   density: "comfortable",
   loadRemoteImages: "ask",
   theme: "system",
-  readingPane: "right"
+  readingPane: "right",
+  onboardedAt: 0
 };
 async function settingsFor(userId) {
   return { ...DEFAULT_SETTINGS, ...await getUserSettings(userId) };

@@ -166,7 +166,7 @@ export function Help() {
   const open = useUi((s) => s.help);
   if (!open) return null;
   return (
-    <Dialog title="Keyboard shortcuts" onClose={() => setUi({ help: false })} wide>
+    <Dialog title="Keyboard shortcuts" onClose={() => setUi({ help: false })} wide footer={<button className="btn btn-ghost" onClick={() => setUi({ help: false, tour: true })}>Show the welcome tour again</button>}>
       <div className="help-cols">
         {KEYS.map((g) => (
           <div className="help-group" key={g.group}>
@@ -233,6 +233,13 @@ export function SettingsDialog() {
           <div className="seg" role="group" aria-label="Reading pane">
             {(["right", "full"] as const).map((t) => <button key={t} aria-pressed={draft.readingPane === t} onClick={() => setDraft({ ...draft, readingPane: t })}>{t === "right" ? "Reading pane" : "Full width"}</button>)}
           </div>
+        </div>
+      </div>
+      <div className="form-row">
+        <span className="form-label">Welcome tour</span>
+        <p className="form-help">The short walkthrough from your first sign-in: the four lanes, the keys, and what to expect.</p>
+        <div>
+          <button className="btn btn-sm" onClick={() => setUi({ settings: false, tour: true })}>Show the tour again</button>
         </div>
       </div>
       <div className="form-row">

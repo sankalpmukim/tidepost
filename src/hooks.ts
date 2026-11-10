@@ -28,6 +28,7 @@ const EMPTY_ME = {
     loadRemoteImages: "ask" as const,
     theme: "system" as const,
     readingPane: "right" as const,
+    onboardedAt: 0,
   },
 };
 
