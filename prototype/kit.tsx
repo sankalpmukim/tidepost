@@ -60,9 +60,8 @@ export function Section({ heading, collapsible, defaultOpen = true, children }: 
   return <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>{h}{children}</section>;
 }
 
-export function Callout({ tone = "info", children }: { tone?: "info" | "warning"; children: ReactNode }) {
-  const c = tone === "warning" ? theme.text.warning : theme.text.accent;
-  return <div style={{ ...theme.font.body2, borderLeft: `3px solid ${c}`, background: theme.bg.subtle, padding: "10px 14px", borderRadius: theme.radius.md }}>{children}</div>;
+export function Callout({ children }: { tone?: "info" | "warning"; children: ReactNode }) {
+  return <div style={{ ...theme.font.body2, background: theme.bg.subtle, padding: "10px 14px", borderRadius: theme.radius.md }}>{children}</div>;
 }
 
 // Turns bare URLs inside a cell into links.

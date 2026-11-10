@@ -11,3 +11,5 @@ Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
 
 <!-- convex-ai-end -->
+
+- Never add left accent borders (border-left or inset box-shadow bars) on rounded cards/containers — the bar curves around the corner and looks broken. Unread state, review state, and callouts must not use them.
