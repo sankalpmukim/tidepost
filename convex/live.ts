@@ -31,6 +31,7 @@ const settings = v.object({
   loadRemoteImages: v.union(v.literal("ask"), v.literal("always")),
   theme: v.union(v.literal("system"), v.literal("light"), v.literal("dark")),
   readingPane: v.union(v.literal("right"), v.literal("full")),
+  onboardedAt: v.number(),
 });
 
 const threadSummary = v.object({
@@ -66,6 +67,7 @@ type Settings = {
   loadRemoteImages: "ask" | "always";
   theme: "system" | "light" | "dark";
   readingPane: "right" | "full";
+  onboardedAt: number;
 };
 
 type Sync = {
@@ -83,6 +85,7 @@ const DEFAULT_SETTINGS: Settings = {
   loadRemoteImages: "ask",
   theme: "system",
   readingPane: "right",
+  onboardedAt: 0,
 };
 
 const DEFAULT_SYNC: Sync = { phase: "idle", done: 0, total: 0, lastSyncedAt: null, error: null };
@@ -111,6 +114,7 @@ function parseSettings(raw: string): Settings {
       loadRemoteImages: o.loadRemoteImages === "always" || o.loadRemoteImages === "ask" ? o.loadRemoteImages : DEFAULT_SETTINGS.loadRemoteImages,
       theme: o.theme === "light" || o.theme === "dark" || o.theme === "system" ? o.theme : DEFAULT_SETTINGS.theme,
       readingPane: o.readingPane === "full" || o.readingPane === "right" ? o.readingPane : DEFAULT_SETTINGS.readingPane,
+      onboardedAt: typeof o.onboardedAt === "number" ? o.onboardedAt : DEFAULT_SETTINGS.onboardedAt,
     };
   } catch {
     return DEFAULT_SETTINGS;

@@ -25,9 +25,10 @@ if (config.production) {
     if (c.req.path !== "/" && file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) {
       return serveStatic({ root: "./dist" })(c, next);
     }
-    // The app is a SPA mounted at /app; every other path gets the landing page.
-    const page = c.req.path === "/app" || c.req.path.startsWith("/app/") ? "app/index.html" : "index.html";
-    return c.html(fs.readFileSync(path.join(dist, page), "utf8"));
+    // "/" is the marketing landing page; every other path that isn't a real
+    // file (like /app or SPA deep links) falls back to the app's index.
+    const index = c.req.path === "/" ? path.join(dist, "index.html") : path.join(dist, "app", "index.html");
+    return c.html(fs.readFileSync(index, "utf8"));
   });
 }
 

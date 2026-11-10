@@ -290,6 +290,8 @@ export interface Settings {
   loadRemoteImages: "ask" | "always";
   theme: "system" | "light" | "dark";
   readingPane: "right" | "full";
+  /** When the welcome walkthrough was finished (epoch ms). 0 = never shown. */
+  onboardedAt: number;
 }
 
 export interface UnsubscribeResult {

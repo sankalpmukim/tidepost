@@ -14,7 +14,7 @@ if (shots) fs.mkdirSync(shots, { recursive: true });
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tidepost-e2e-"));
 
 const server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
-  env: { ...process.env, NODE_ENV: "production", PORT: String(PORT), APP_URL: BASE, TIDEPOST_DATA_DIR: dataDir, TIDEPOST_SECRET: "e2e", ANTHROPIC_API_KEY: "", GOOGLE_CLIENT_ID: "", MICROSOFT_CLIENT_ID: "" },
+  env: { ...process.env, NODE_ENV: "production", PORT: String(PORT), APP_URL: BASE, TIDEPOST_DATA_DIR: dataDir, TIDEPOST_SECRET: process.env.TIDEPOST_SECRET || "e2e", ANTHROPIC_API_KEY: "", GOOGLE_CLIENT_ID: "", MICROSOFT_CLIENT_ID: "" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -68,7 +68,9 @@ const rows = () => page.locator(".row");
 const key = (k) => page.keyboard.press(k);
 
 await step("sign-in page renders", async () => {
-  await page.goto(`${BASE}/app`);
+  await page.goto(BASE);
+  // "/" is the marketing landing page; its CTA opens the app.
+  await page.getByRole("link", { name: "Open Tidepost" }).click();
   await page.getByRole("heading", { name: /Get through the inbox/ }).waitFor();
   await shot("01-signin");
 });
@@ -77,9 +79,39 @@ await step("demo mailbox opens and indexes", async () => {
   await page.getByRole("button", { name: /Try a demo mailbox/ }).click();
   await page.locator(".shell").waitFor();
   await rows().first().waitFor({ timeout: 30000 });
-  await page.waitForFunction(() => !document.querySelector(".sync-banner") || !document.querySelector(".sync-banner .spinner"), null, { timeout: 60000 });
+  // Initial indexing can take minutes against a remote Convex deployment
+  // (~100 messages per batch); the wait ends as soon as the spinner clears.
+  await page.waitForFunction(() => !document.querySelector(".sync-banner") || !document.querySelector(".sync-banner .spinner"), null, { timeout: 600000 });
   await page.waitForTimeout(800);
-  await shot("02-needs-you");
+  await shot("02-first-run");
+});
+
+await step("welcome walkthrough pages with j/k and starts", async () => {
+  const card = page.locator(".onboarding");
+  await card.waitFor();
+  const text = await card.innerText();
+  assert(/Welcome to Tidepost/.test(text), "no welcome copy");
+  await key("j"); // lanes
+  assert(/How your mail is sorted/.test(await card.innerText()), "lanes step missing");
+  await key("j"); // keyboard
+  assert(/Keyboard first/.test(await card.innerText()), "keys step missing");
+  await key("k"); // back to lanes, then forward again
+  await key("j");
+  await key("j"); // what to expect
+  assert(/What to expect/.test(await card.innerText()), "expectations step missing");
+  await shot("02b-onboarding");
+  await page.getByRole("button", { name: /Start with Needs you/ }).click();
+  await card.waitFor({ state: "detached" });
+  // The finish persists onboardedAt; wait for that save to land before reloading.
+  await page.waitForFunction(async () => {
+    const r = await fetch("/api/me");
+    const j = await r.json();
+    return (j.settings && j.settings.onboardedAt) > 0;
+  }, null, { timeout: 10000 });
+  // Finished once, finished for good: it must not come back on reload.
+  await page.reload();
+  await rows().first().waitFor();
+  assert(await page.locator(".onboarding").count() === 0, "walkthrough reappeared after reload");
 });
 
 let laneCounts = {};

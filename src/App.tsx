@@ -10,6 +10,7 @@ import { Reader, unsubscribe } from "./components/Reader";
 import { Rail } from "./components/Rail";
 import { Composer } from "./components/Composer";
 import { CommandPalette, Help, SettingsDialog, Toasts } from "./components/Overlays";
+import { Onboarding } from "./components/Onboarding";
 import type { OutgoingMessage, QueuedSend, ThreadSummary } from "../shared/types";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { ThreadPage } from "../shared/types";
@@ -62,6 +63,11 @@ function Shell() {
       setUi({ accountId: me.accounts.find((a) => a.id === fromUrl)?.id ?? me.accounts[0].id });
     }
   }, [accountId, me.accounts]);
+
+  // First run: open the welcome walkthrough until it's finished or skipped.
+  useEffect(() => {
+    if (!me.settings.onboardedAt) setUi({ tour: true });
+  }, [me.settings.onboardedAt]);
 
   // Undo send: a countdown toast for every queued message.
   useEffect(() => {
@@ -135,6 +141,7 @@ function Shell() {
       <CommandPalette />
       <Help />
       <SettingsDialog />
+      <Onboarding />
       <Toasts />
     </div>
   );
@@ -161,6 +168,7 @@ function useKeyboard(perform: ReturnType<typeof useActions>["perform"], undo: ()
       const target = e.target as HTMLElement;
       const typing = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
       const mod = e.metaKey || e.ctrlKey;
+      if (ui.tour) return; // the welcome walkthrough owns the keyboard
       if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setUi({ palette: !ui.palette });
