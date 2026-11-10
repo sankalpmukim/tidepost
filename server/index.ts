@@ -25,7 +25,9 @@ if (config.production) {
     if (c.req.path !== "/" && file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) {
       return serveStatic({ root: "./dist" })(c, next);
     }
-    return c.html(fs.readFileSync(path.join(dist, "index.html"), "utf8"));
+    // The app is a SPA mounted at /app; every other path gets the landing page.
+    const page = c.req.path === "/app" || c.req.path.startsWith("/app/") ? "app/index.html" : "index.html";
+    return c.html(fs.readFileSync(path.join(dist, page), "utf8"));
   });
 }
 

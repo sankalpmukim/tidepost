@@ -79,7 +79,7 @@ describe("Google sign-in to send", () => {
     const oauthCookie = start.headers.get("set-cookie")!.split(";")[0];
     const cb = await app.request(`/api/auth/google/callback?code=authcode&state=${state}`, { headers: { cookie: oauthCookie } });
     expect(cb.status).toBe(302);
-    expect(cb.headers.get("location")).toMatch(/^\/\?account=acc_/);
+    expect(cb.headers.get("location")).toMatch(/^\/app\?account=acc_/);
     accountId = decodeURIComponent(cb.headers.get("location")!.split("account=")[1]);
     const setCookies = cb.headers.getSetCookie();
     cookie = setCookies.find((c) => c.startsWith("tp_session="))!.split(";")[0];
