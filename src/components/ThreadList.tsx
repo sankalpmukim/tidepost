@@ -3,8 +3,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Archive, Clock, Mail, MailOpen, Paperclip, Pin, Search, Star, Trash2, Users, X, RefreshCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAccount, useActions, useCounts, useLocalSearch, useMe, useThreads } from "../hooks";
-import { setUi, useUi } from "../store";
-import { api } from "../api";
+import { setUi, toast, useUi } from "../store";
+import { api, ApiError } from "../api";
 import { Menu, StatusGlyph, snoozeOptions, LANE_WORDS } from "./bits";
 import { ago, listDate, plural, sendersLine, until } from "../lib/format";
 import type { ThreadSummary } from "../../shared/types";
@@ -112,6 +112,22 @@ export function ThreadList() {
 
   const bulk = (action: Parameters<typeof perform>[1]) => void perform([...checked], action);
 
+  const [checking, setChecking] = useState(false);
+  const checkMail = async () => {
+    if (!aid || checking) return;
+    setChecking(true);
+    const least = new Promise((r) => setTimeout(r, 500));
+    try {
+      await api.sync(aid);
+      await qc.invalidateQueries({ queryKey: ["threads", aid] });
+    } catch (err) {
+      toast({ text: err instanceof ApiError ? err.message : "Couldn't check for new mail. Try again.", tone: "error" });
+    } finally {
+      await least;
+      setChecking(false);
+    }
+  };
+
   return (
     <section className="list-pane" aria-label="Threads" data-selecting={selecting}>
       <div className="list-head">
@@ -202,7 +218,7 @@ export function ThreadList() {
             <span style={{ marginLeft: 8 }}>{q.isLoading ? "Loading…" : plural(total, "thread")}</span>
             <span className="spacer" />
             {view === "waiting" ? <span>Oldest first</span> : null}
-            {aid ? <button className="icon-btn icon-btn-sm" title="Check for new mail" aria-label="Check for new mail" onClick={() => void api.sync(aid).then(() => qc.invalidateQueries({ queryKey: ["threads", aid] }))}><RefreshCw size={14} /></button> : null}
+            {aid ? <button className="icon-btn icon-btn-sm" title="Check for new mail" aria-label="Check for new mail" disabled={checking} onClick={() => void checkMail()}><RefreshCw size={14} className={checking ? "glyph-working" : undefined} /></button> : null}
           </>
         )}
       </div>
