@@ -12,7 +12,7 @@ export const config = {
   port,
   /** Public URL the browser uses. OAuth redirect URIs are built from it. */
   appUrl: env("APP_URL", "http://localhost:5173").replace(/\/$/, ""),
-  dataDir: path.resolve(env("TIDEPOST_DATA_DIR", ".data")),
+  dataDir: path.resolve(env("TIDEPOST_DATA_DIR", process.env.VERCEL ? "/tmp/tidepost" : ".data")),
   /** Secret for encrypting tokens at rest. Generated into the data dir when unset. */
   secret: env("TIDEPOST_SECRET"),
   production: env("NODE_ENV") === "production",
