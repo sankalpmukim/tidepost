@@ -53,7 +53,7 @@ export function Sidebar() {
     { label: "Add an Outlook account", icon: <Plus size={14} />, onSelect: () => { window.location.href = "/api/auth/microsoft/start"; } },
     "sep",
     { label: "Settings", icon: <SettingsIcon size={14} />, hint: ",", onSelect: () => setUi({ settings: true }) },
-    { label: "Sign out", icon: <LogOut size={14} />, onSelect: async () => { await api.logout(); window.location.href = "/"; } },
+    { label: "Sign out", icon: <LogOut size={14} />, onSelect: async () => { try { await api.logout(); } catch { /* session may already be gone; land on sign-in either way */ } window.location.href = "/app"; } },
   ];
 
   const sweepItems: MenuEntry[] = [

@@ -97,7 +97,7 @@ app.get("/api/auth/:provider/start", async (c) => {
 
 app.get("/api/auth/:provider/callback", async (c) => {
   const provider = c.req.param("provider");
-  const fail = (msg: string) => c.redirect(`/?auth_error=${encodeURIComponent(msg)}`);
+  const fail = (msg: string) => c.redirect(`/app?auth_error=${encodeURIComponent(msg)}`);
   const raw = getCookie(c, OAUTH_COOKIE);
   deleteCookie(c, OAUTH_COOKIE, { path: "/api/auth" });
   const err = c.req.query("error");
@@ -145,7 +145,7 @@ app.get("/api/auth/:provider/callback", async (c) => {
     await startSession(c, userId);
     startPolling(account.id);
     void syncNow(account.id);
-    return c.redirect(`/?account=${encodeURIComponent(account.id)}`);
+    return c.redirect(`/app?account=${encodeURIComponent(account.id)}`);
   } catch (e) {
     console.error("[oauth]", e);
     return fail(e instanceof Error ? e.message : "Sign-in failed.");

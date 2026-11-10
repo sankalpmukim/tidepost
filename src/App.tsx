@@ -57,7 +57,7 @@ function Shell() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const fromUrl = params.get("account");
-    if (fromUrl || params.has("auth_error")) window.history.replaceState(null, "", "/");
+    if (fromUrl || params.has("auth_error")) window.history.replaceState(null, "", "/app");
     if (!accountId || !me.accounts.some((a) => a.id === accountId)) {
       setUi({ accountId: me.accounts.find((a) => a.id === fromUrl)?.id ?? me.accounts[0].id });
     }

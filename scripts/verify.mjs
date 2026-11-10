@@ -68,7 +68,7 @@ const rows = () => page.locator(".row");
 const key = (k) => page.keyboard.press(k);
 
 await step("sign-in page renders", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/app`);
   await page.getByRole("heading", { name: /Get through the inbox/ }).waitFor();
   await shot("01-signin");
 });
