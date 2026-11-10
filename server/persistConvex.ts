@@ -12,6 +12,18 @@ import type {
 import { BODY_JSON_MAX } from "./limits";
 import type { ProviderKind } from "../shared/types";
 
+/** Writes must stay within one mutation's limits; chunk instead of truncating.
+ *  These match the batch caps the mutations accept. */
+const WRITE_CHUNK = { messages: 40, deletes: 80, threads: 40 };
+
+/** Minimal shape of ConvexHttpClient used here; tests inject a fake. */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export interface ConvexClient {
+  mutation(ref: any, args: any): Promise<any>;
+  query(ref: any, args: any): Promise<any>;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 function secret(): string {
   const s = config.secret || process.env.TIDEPOST_SECRET || "";
   if (!s) throw new Error("TIDEPOST_SECRET is required when using Convex");
@@ -194,8 +206,8 @@ function fromQueue(row: {
   };
 }
 
-export function createConvexPersist(url: string): Persist {
-  const client = new ConvexHttpClient(url);
+export function createConvexPersist(url: string, clientForTest?: ConvexClient): Persist {
+  const client = clientForTest ?? new ConvexHttpClient(url);
   const s = () => ({ secret: secret() });
 
   return {
@@ -261,12 +273,22 @@ export function createConvexPersist(url: string): Persist {
       await client.mutation(api.mailIndex.removeAccount, { ...s(), accountId: id });
     },
     async putMessages(rows) {
-      const prev = await client.mutation(api.mailIndex.putMessages, { ...s(), messages: rows.map(toMessage) });
-      return prev.map((p) => ({ id: p.messageId, thread_id: p.threadId }));
+      const prev: { id: string; thread_id: string }[] = [];
+      for (let i = 0; i < rows.length; i += WRITE_CHUNK.messages) {
+        const chunk = rows.slice(i, i + WRITE_CHUNK.messages);
+        const back = await client.mutation(api.mailIndex.putMessages, { ...s(), messages: chunk.map(toMessage) });
+        prev.push(...back.map((p: { messageId: string; threadId: string }) => ({ id: p.messageId, thread_id: p.threadId })));
+      }
+      return prev;
     },
     async deleteMessages(accountId, ids) {
-      const prev = await client.mutation(api.mailIndex.deleteMessages, { ...s(), accountId, ids });
-      return prev.map((p) => ({ id: p.messageId, thread_id: p.threadId }));
+      const prev: { id: string; thread_id: string }[] = [];
+      for (let i = 0; i < ids.length; i += WRITE_CHUNK.deletes) {
+        const chunk = ids.slice(i, i + WRITE_CHUNK.deletes);
+        const back = await client.mutation(api.mailIndex.deleteMessages, { ...s(), accountId, ids: chunk });
+        prev.push(...back.map((p: { messageId: string; threadId: string }) => ({ id: p.messageId, thread_id: p.threadId })));
+      }
+      return prev;
     },
     async getMessage(accountId, id) {
       const row = await client.query(api.mailIndex.getMessage, { ...s(), accountId, messageId: id });
@@ -287,7 +309,10 @@ export function createConvexPersist(url: string): Persist {
       await client.mutation(api.mailIndex.pruneOldestMessages, { ...s(), accountId });
     },
     async putThreads(rows) {
-      await client.mutation(api.mailIndex.putThreads, { ...s(), threads: rows.map(toThread) });
+      for (let i = 0; i < rows.length; i += WRITE_CHUNK.threads) {
+        const chunk = rows.slice(i, i + WRITE_CHUNK.threads);
+        await client.mutation(api.mailIndex.putThreads, { ...s(), threads: chunk.map(toThread) });
+      }
     },
     async deleteThread(accountId, threadId) {
       await client.mutation(api.mailIndex.deleteThread, { ...s(), accountId, threadId });

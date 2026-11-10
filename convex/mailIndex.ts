@@ -72,7 +72,7 @@ export const putMessages = mutation({
   handler: async (ctx, args) => {
     assertSecret(args.secret);
     const prev: { messageId: string; threadId: string }[] = [];
-    for (const m of args.messages.slice(0, 40)) {
+    for (const m of args.messages) {
       const existing = await ctx.db
         .query("messages")
         .withIndex("by_accountId_and_messageId", (q) => q.eq("accountId", m.accountId).eq("messageId", m.messageId))
@@ -95,7 +95,7 @@ export const deleteMessages = mutation({
   handler: async (ctx, args) => {
     assertSecret(args.secret);
     const prev: { messageId: string; threadId: string }[] = [];
-    for (const id of args.ids.slice(0, 80)) {
+    for (const id of args.ids) {
       const existing = await ctx.db
         .query("messages")
         .withIndex("by_accountId_and_messageId", (q) => q.eq("accountId", args.accountId).eq("messageId", id))
@@ -163,7 +163,7 @@ export const putThreads = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     assertSecret(args.secret);
-    for (const t of args.threads.slice(0, 40)) {
+    for (const t of args.threads) {
       const existing = await ctx.db
         .query("threads")
         .withIndex("by_accountId_and_threadId", (q) => q.eq("accountId", t.accountId).eq("threadId", t.threadId))

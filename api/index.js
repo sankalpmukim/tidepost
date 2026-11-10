@@ -234,8 +234,8 @@ function fromQueue(row) {
     created_at: row.createdAt
   };
 }
-function createConvexPersist(url) {
-  const client2 = new ConvexHttpClient(url);
+function createConvexPersist(url, clientForTest) {
+  const client2 = clientForTest ?? new ConvexHttpClient(url);
   const s = () => ({ secret: secret() });
   return {
     async insertUser(row) {
@@ -300,12 +300,22 @@ function createConvexPersist(url) {
       await client2.mutation(api.mailIndex.removeAccount, { ...s(), accountId: id });
     },
     async putMessages(rows) {
-      const prev = await client2.mutation(api.mailIndex.putMessages, { ...s(), messages: rows.map(toMessage) });
-      return prev.map((p) => ({ id: p.messageId, thread_id: p.threadId }));
+      const prev = [];
+      for (let i = 0; i < rows.length; i += WRITE_CHUNK.messages) {
+        const chunk = rows.slice(i, i + WRITE_CHUNK.messages);
+        const back = await client2.mutation(api.mailIndex.putMessages, { ...s(), messages: chunk.map(toMessage) });
+        prev.push(...back.map((p) => ({ id: p.messageId, thread_id: p.threadId })));
+      }
+      return prev;
     },
     async deleteMessages(accountId, ids) {
-      const prev = await client2.mutation(api.mailIndex.deleteMessages, { ...s(), accountId, ids });
-      return prev.map((p) => ({ id: p.messageId, thread_id: p.threadId }));
+      const prev = [];
+      for (let i = 0; i < ids.length; i += WRITE_CHUNK.deletes) {
+        const chunk = ids.slice(i, i + WRITE_CHUNK.deletes);
+        const back = await client2.mutation(api.mailIndex.deleteMessages, { ...s(), accountId, ids: chunk });
+        prev.push(...back.map((p) => ({ id: p.messageId, thread_id: p.threadId })));
+      }
+      return prev;
     },
     async getMessage(accountId, id) {
       const row = await client2.query(api.mailIndex.getMessage, { ...s(), accountId, messageId: id });
@@ -326,7 +336,10 @@ function createConvexPersist(url) {
       await client2.mutation(api.mailIndex.pruneOldestMessages, { ...s(), accountId });
     },
     async putThreads(rows) {
-      await client2.mutation(api.mailIndex.putThreads, { ...s(), threads: rows.map(toThread) });
+      for (let i = 0; i < rows.length; i += WRITE_CHUNK.threads) {
+        const chunk = rows.slice(i, i + WRITE_CHUNK.threads);
+        await client2.mutation(api.mailIndex.putThreads, { ...s(), threads: chunk.map(toThread) });
+      }
     },
     async deleteThread(accountId, threadId) {
       await client2.mutation(api.mailIndex.deleteThread, { ...s(), accountId, threadId });
@@ -416,12 +429,14 @@ function createConvexPersist(url) {
     }
   };
 }
+var WRITE_CHUNK;
 var init_persistConvex = __esm({
   "server/persistConvex.ts"() {
     "use strict";
     init_api();
     init_config();
     init_limits();
+    WRITE_CHUNK = { messages: 40, deletes: 80, threads: 40 };
   }
 });
 
@@ -1491,13 +1506,6 @@ var init_gmail = __esm({
             await this.call(COST.batchModify, "/messages/batchModify", void 0, { method: "POST", body });
           }
         };
-        const trash = async () => {
-          await mapLimit(
-            ids,
-            8,
-            (id) => this.call(COST.trash, `/messages/${encodeURIComponent(id)}/trash`, void 0, { method: "POST" })
-          );
-        };
         switch (change.kind) {
           case "read":
             return change.value ? batch([], ["UNREAD"]) : batch(["UNREAD"], []);
@@ -1508,7 +1516,7 @@ var init_gmail = __esm({
           case "inbox":
             return batch(["INBOX"], ["TRASH", "SPAM"]);
           case "trash":
-            return trash();
+            return batch(["TRASH"], ["INBOX"]);
           case "spam":
             return batch(["SPAM"], ["INBOX"]);
           case "addLabel":
@@ -1524,7 +1532,7 @@ var init_gmail = __esm({
               case "ARCHIVE":
                 return batch([], ["INBOX"]);
               case "TRASH":
-                return trash();
+                return batch(["TRASH"], ["INBOX"]);
               case "SPAM":
                 return batch(["SPAM"], ["INBOX"]);
               default:
@@ -12886,7 +12894,7 @@ async function upsertMessages(accountId, me2, metas) {
   const prev = await persist().putMessages(metas.map((m) => metaToRow(accountId, m)));
   for (const p of prev) threads.add(p.thread_id);
   for (const m of metas) threads.add(m.threadId);
-  for (const t of threads) await rebuildThread(accountId, me2, t);
+  await rebuildThreads(accountId, me2, [...threads]);
   await persist().pruneOldestMessages(accountId);
   return [...threads];
 }
@@ -12894,7 +12902,7 @@ async function deleteMessages(accountId, me2, ids) {
   if (!ids.length) return [];
   const prev = await persist().deleteMessages(accountId, ids);
   const threads = new Set(prev.map((p) => p.thread_id));
-  for (const t of threads) await rebuildThread(accountId, me2, t);
+  await rebuildThreads(accountId, me2, [...threads]);
   return [...threads];
 }
 async function indexBody(accountId, messageId, text) {
@@ -12930,60 +12938,71 @@ async function threadMetas(accountId, threadId) {
   const rows = await persist().messagesForThread(accountId, threadId);
   return rows.map(rowToMeta);
 }
-async function rebuildThread(accountId, me2, threadId) {
-  const all = await threadMetas(accountId, threadId);
-  const msgs = all.filter((m) => !m.folders.includes("DRAFT"));
-  if (!msgs.length) {
-    await persist().deleteThread(accountId, threadId);
-    return;
-  }
-  const last = msgs[msgs.length - 1];
-  const lastFromMe = isFromMe(last, me2);
-  const others = msgs.filter((m) => !isFromMe(m, me2));
-  const lastOther = others[others.length - 1] ?? null;
-  const anyMine = msgs.some((m) => isFromMe(m, me2));
-  const toMeDirect = lastOther ? lastOther.to.some((p) => p.email === me2) || lastOther.to.length === 0 && lastOther.cc.length === 0 : false;
-  const isBulk = !anyMine && !!lastOther && messageIsBulk(lastOther);
-  const senders = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const m of msgs) {
-    if (!seen.has(m.from.email)) {
-      seen.add(m.from.email);
-      senders.push(m.from);
+function buildThreadRow(accountId, me2, threadId) {
+  return (async () => {
+    const all = await threadMetas(accountId, threadId);
+    const msgs = all.filter((m) => !m.folders.includes("DRAFT"));
+    if (!msgs.length) return null;
+    const last = msgs[msgs.length - 1];
+    const lastFromMe = isFromMe(last, me2);
+    const others = msgs.filter((m) => !isFromMe(m, me2));
+    const lastOther = others[others.length - 1] ?? null;
+    const anyMine = msgs.some((m) => isFromMe(m, me2));
+    const toMeDirect = lastOther ? lastOther.to.some((p) => p.email === me2) || lastOther.to.length === 0 && lastOther.cc.length === 0 : false;
+    const isBulk = !anyMine && !!lastOther && messageIsBulk(lastOther);
+    const senders = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const m of msgs) {
+      if (!seen.has(m.from.email)) {
+        seen.add(m.from.email);
+        senders.push(m.from);
+      }
     }
-  }
-  const audience = /* @__PURE__ */ new Set();
-  for (const m of msgs) for (const p of [m.from, ...m.to, ...m.cc]) audience.add(p.email);
-  const folders = /* @__PURE__ */ new Set();
-  for (const m of msgs) for (const f of m.folders) folders.add(f);
-  const inInbox = msgs.some((m) => m.folders.includes("INBOX"));
-  await persist().putThreads([{
-    account_id: accountId,
-    id: threadId,
-    subject: normalizeSubject(msgs[0].subject || last.subject),
-    snippet: last.snippet,
-    participants: JSON.stringify(senders.slice(0, 40)),
-    last_from_name: last.from.name,
-    last_from_email: last.from.email,
-    last_from_me: lastFromMe ? 1 : 0,
-    last_date_ms: Date.parse(last.date),
-    first_date_ms: Date.parse(msgs[0].date),
-    message_count: msgs.length,
-    unread_count: msgs.filter((m) => m.unread).length,
-    starred: msgs.some((m) => m.starred) ? 1 : 0,
-    has_att: msgs.some((m) => m.hasAttachments) ? 1 : 0,
-    folders: foldersToStr([...folders]),
-    in_inbox: inInbox ? 1 : 0,
-    to_me_direct: toMeDirect ? 1 : 0,
-    is_bulk: isBulk ? 1 : 0,
-    audience: audience.size
-  }]);
-  if (!lastFromMe) {
-    const state = await persist().getThreadState(accountId, threadId);
-    if (state && (state.nudged === 1 || state.remind_at !== null) && (state.remind_set_at ?? 0) < Date.parse(last.date)) {
-      await persist().patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
+    const audience = /* @__PURE__ */ new Set();
+    for (const m of msgs) for (const p of [m.from, ...m.to, ...m.cc]) audience.add(p.email);
+    const folders = /* @__PURE__ */ new Set();
+    for (const m of msgs) for (const f of m.folders) folders.add(f);
+    const inInbox = msgs.some((m) => m.folders.includes("INBOX"));
+    if (!lastFromMe) {
+      const state = await persist().getThreadState(accountId, threadId);
+      if (state && (state.nudged === 1 || state.remind_at !== null) && (state.remind_set_at ?? 0) < Date.parse(last.date)) {
+        await persist().patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
+      }
     }
-  }
+    return {
+      account_id: accountId,
+      id: threadId,
+      subject: normalizeSubject(msgs[0].subject || last.subject),
+      snippet: last.snippet,
+      participants: JSON.stringify(senders.slice(0, 40)),
+      last_from_name: last.from.name,
+      last_from_email: last.from.email,
+      last_from_me: lastFromMe ? 1 : 0,
+      last_date_ms: Date.parse(last.date),
+      first_date_ms: Date.parse(msgs[0].date),
+      message_count: msgs.length,
+      unread_count: msgs.filter((m) => m.unread).length,
+      starred: msgs.some((m) => m.starred) ? 1 : 0,
+      has_att: msgs.some((m) => m.hasAttachments) ? 1 : 0,
+      folders: foldersToStr([...folders]),
+      in_inbox: inInbox ? 1 : 0,
+      to_me_direct: toMeDirect ? 1 : 0,
+      is_bulk: isBulk ? 1 : 0,
+      audience: audience.size
+    };
+  })();
+}
+async function rebuildThreads(accountId, me2, threadIds) {
+  if (!threadIds.length) return;
+  const rows = await Promise.all(
+    threadIds.map(async (t) => {
+      const row = await buildThreadRow(accountId, me2, t);
+      if (!row) await persist().deleteThread(accountId, t);
+      return row;
+    })
+  );
+  const keep = rows.filter((r) => !!r);
+  if (keep.length) await persist().putThreads(keep);
 }
 var WAITING_WINDOW_MS = 30 * 24 * 3600 * 1e3;
 function laneOf(r, now = Date.now()) {
@@ -13141,11 +13160,10 @@ async function getBrief(accountId, threadId) {
   return row?.brief ?? null;
 }
 async function applyLocal(accountId, me2, threadIds, fn) {
-  for (const t of threadIds) {
-    const metas = await threadMetas(accountId, t);
-    const changed = metas.map(fn).filter((m) => !!m);
-    await upsertMessages(accountId, me2, changed);
-  }
+  if (!threadIds.length) return;
+  const metasPerThread = await Promise.all(threadIds.map((t) => threadMetas(accountId, t)));
+  const changed = metasPerThread.flatMap((metas) => metas.map(fn).filter((m) => !!m));
+  if (changed.length) await upsertMessages(accountId, me2, changed);
 }
 async function localSearch(accountId, q, limit = 50) {
   const terms = q.replace(/["*():^]/g, " ").split(/\s+/).filter((t) => t && !t.includes(":")).map((t) => t.toLowerCase());
@@ -14393,7 +14411,7 @@ app.get("/api/auth/:provider/start", async (c) => {
     const { microsoftAuthUrl: microsoftAuthUrl2 } = await Promise.resolve().then(() => (init_microsoft(), microsoft_exports));
     return c.redirect(microsoftAuthUrl2({ state, codeChallenge: challenge, loginHint }));
   } catch (err) {
-    return c.redirect(`/?auth_error=${encodeURIComponent(err instanceof Error ? err.message : "Sign-in is not configured")}`);
+    return c.redirect(`/app?auth_error=${encodeURIComponent(err instanceof Error ? err.message : "Sign-in is not configured")}`);
   }
 });
 app.get("/api/auth/:provider/callback", async (c) => {

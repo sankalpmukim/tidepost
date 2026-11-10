@@ -814,11 +814,6 @@ export class GmailProvider implements MailProvider {
         await this.call<void>(COST.batchModify, "/messages/batchModify", undefined, { method: "POST", body });
       }
     };
-    const trash = async () => {
-      await mapLimit(ids, 8, (id) =>
-        this.call<unknown>(COST.trash, `/messages/${encodeURIComponent(id)}/trash`, undefined, { method: "POST" }),
-      );
-    };
 
     switch (change.kind) {
       case "read":
@@ -830,7 +825,9 @@ export class GmailProvider implements MailProvider {
       case "inbox":
         return batch(["INBOX"], ["TRASH", "SPAM"]);
       case "trash":
-        return trash();
+        // One batched call instead of one POST per message: trashing a long
+        // thread used to take one round trip per message.
+        return batch(["TRASH"], ["INBOX"]);
       case "spam":
         return batch(["SPAM"], ["INBOX"]);
       case "addLabel":
@@ -847,7 +844,7 @@ export class GmailProvider implements MailProvider {
           case "ARCHIVE":
             return batch([], ["INBOX"]);
           case "TRASH":
-            return trash();
+            return batch(["TRASH"], ["INBOX"]);
           case "SPAM":
             return batch(["SPAM"], ["INBOX"]);
           default:

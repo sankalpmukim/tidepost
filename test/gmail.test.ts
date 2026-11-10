@@ -663,14 +663,11 @@ describe("modify", () => {
     });
   }
 
-  it("trash calls messages.trash per id", async () => {
+  it("trash uses one batched batchModify (TRASH added, INBOX removed)", async () => {
     captureModify();
     await provider().modify(["a", "b", "c"], { kind: "trash" });
-    expect(calls.map((c) => `${c.method} ${path(c)}`).sort()).toEqual([
-      "POST /messages/a/trash",
-      "POST /messages/b/trash",
-      "POST /messages/c/trash",
-    ]);
+    expect(batches()).toEqual([{ ids: ["a", "b", "c"], addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] }]);
+    expect(calls.filter((c) => /\/trash$/.test(path(c)))).toHaveLength(0);
   });
 
   it("splits batchModify into chunks of 1000 ids", async () => {
