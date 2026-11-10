@@ -1,116 +1,180 @@
 # Tidepost
 
-An experiment: what if an email client worked like an agent workbench?
+A keyboard-first email client for Gmail and Outlook, built for people who get a lot of corporate mail.
 
-Tidepost is a single-page prototype of an email client whose interaction model is borrowed from open-source agent development environments such as [Orca](https://www.onorca.dev) and [T3 Code](https://github.com/pingdotgg/t3code). Threads behave like agent sessions: each one has a live status, an assistant proposes plans you approve step by step, drafts arrive as diffs against your rough notes, and bulk work runs in the background until you review it.
+Tidepost started as [a concept prototype](prototype/) asking what an email client would look like if it worked like an agent workbench. Agent tools have spent a year or two working out how a person supervises work they didn't do themselves: status at a glance, plan before act, review as a diff, background runs you check before they apply. Triage is mostly the same job. This version is a working client built on that idea. You sign in with a real Google or Microsoft account, and it reads, sorts and sends real mail.
 
-> **Status: experiment / prototype.** There is no real email here. No backend, no mail server, no accounts, no network calls. Every person, thread, company and amount is made-up example data, the "assistant" is scripted, and sending is simulated: a confirmed send only appends your message to the thread on the page.
+## What it does
 
-## Why
+**Triage lanes instead of one inbox.** Every inbox thread lands in one lane, worked out from the headers. No AI is involved, so the rules stay predictable:
 
-Ryan Dahl [observed](https://x.com/rough__sea/status/2119288646671155217) that talking to a coding agent is more like email than IRC: interactions are few and far between, you quote the agent's latest text, answer several questions at once and address different topics in one reply.
-
-[My take](https://x.com/sankalpgotbaned/status/2119760277550112809) is the reverse: what is more likely to happen is that email clients become more agent-like. Agent tools have spent the last year or two working out how a person supervises asynchronous work they did not do themselves: status at a glance, plan before act, review as a diff, checkpoints, background runs. That is most of what triaging an inbox is. Tidepost is a quick sketch of that idea.
-
-## Patterns borrowed
-
-| Pattern | Source | In Tidepost |
-| --- | --- | --- |
-| Status glyphs and a "Needs you" count | [Orca: agents and sessions](https://www.onorca.dev/docs/model/agents-sessions) | Each thread shows needs you (`?`), working (spinner), done (`●`) or idle (`○`); the top bar filters by state. |
-| Projects holding threads; pinned, snoozed, settled shelves | [T3 Code: thread sidebar](https://github.com/pingdotgg/t3code/blob/main/docs/user/thread-sidebar.md) | Spaces (Home renovation, Hiring, Money, ...) hold threads; Settle means done for now. |
-| Parallel agents in their own worktrees | [Orca: worktrees](https://www.onorca.dev/docs/model/worktrees) | Bulk jobs (newsletter triage, follow-up sweep) run in the background with progress, then wait for review. |
-| Race agents on one task, pick the winner | [Orca: parallel agents](https://www.onorca.dev/docs/recipes/parallel-agents) | Every draft comes in three variants (Brief, Warm, Firm); you pick one. |
-| Plan before act | [Cline: Plan & Act](https://docs.cline.bot/core-workflows/plan-and-act) | `/plan` proposes steps; each needs Approve before it runs. |
-| Permission modes in the composer | [T3 Code: permission modes](https://github.com/pingdotgg/t3code/blob/main/docs/user/permission-modes.md) | Ask (read-only), Plan, Draft; sending is locked to always-confirm. |
-| Review changes, keep or reject hunks | [Zed: agent panel](https://zed.dev/docs/ai/agent-panel) | The assistant's edits to your rough reply show as a diff; keep or reject each edit. |
-| Checkpoints and `/undo` | [Cline: checkpoints](https://docs.cline.bot/core-workflows/checkpoints), [OpenCode TUI](https://opencode.ai/docs/tui/) | Every draft decision is a checkpoint you can restore; `/undo` steps back one. |
-| Slash commands and `@` references | [OpenCode TUI](https://opencode.ai/docs/tui/) | `/summarize /plan /draft /schedule /followup /triage /undo`; `@` adds people, files, calendar as context. |
-| Cite in composer | [T3 Code: composer](https://github.com/pingdotgg/t3code/blob/main/docs/user/composer.md) | Cite any paragraph of an email, then answer several asks in one instruction. |
-| Collapsed activity log | [T3 Code: activity log](https://github.com/pingdotgg/t3code/blob/main/docs/user/activity-log.md) | Each assistant turn folds its tool work into one line you can expand. |
-| Queue or steer follow-ups | [T3 Code: keybindings](https://github.com/pingdotgg/t3code/blob/main/docs/user/keybindings.md) | Messages sent while the assistant is working queue up; "Steer now" pushes one in. |
-| Keyboard-first navigation | [OpenCode](https://opencode.ai/docs/tui/), [T3 Code](https://github.com/pingdotgg/t3code/blob/main/docs/user/keybindings.md) keybindings | `j` / `k` between threads, `/` for commands, `e` to settle, `Tab` to complete. |
-
-## Tour
-
-The layout is three columns: a sidebar of threads grouped by space, the open thread with its assistant conversation and composer, and a right rail with the thread's open asks and background runs.
-
-1. **Answer several asks at once.** Open Priya's kitchen-quote thread (selected on load). Click **Cite** on two or three paragraphs, type your answers, press Enter. The assistant turn notes how many quoted points it is answering.
-2. **Plan, then approve.** Type `/plan` (or press `/` anywhere outside the composer). The assistant streams its activity, then proposes steps: draft a reply, hold a calendar slot, file the attachment. Approve or reject each one, or use **Approve all**. Nothing runs until you approve it.
-3. **Review the draft as a diff.** Approving a draft step produces a reply built from your rough notes. Switch between the Brief, Warm and Firm variants. Lines prefixed `−` are your words, `+` the assistant's edits; keep or reject each hunk. Every decision is a checkpoint you can click back to, and `/undo` restores the previous one.
-4. **Send behind an explicit confirm.** **Approve & send…** is disabled until every edit is decided, then shows the final text and asks again. **Confirm send** appends the message to the thread and marks the asks answered. Nothing leaves the page.
-5. **Watch background work.** A `/triage 40 newsletters` run starts on load. When it reaches review, **Apply** adds a new "Needs you" thread with the three newsletters that actually need a decision. **Start /followup sweep on Hiring** runs a second job the same way.
-6. **Queue and steer.** Send a message while a thread is working and it queues under the composer; **Steer now** injects it, **Remove** drops it.
-7. **Shelves.** Pin, Snooze or Settle the open thread from its header. Snoozed and settled threads collapse at the bottom of the sidebar.
-
-### Composer modes
-
-| Mode | What plain text does |
+| Lane | Meaning |
 | --- | --- |
-| Ask | Read-only. The assistant summarizes; nothing changes. |
-| Plan | Proposes a plan you approve step by step (default). |
-| Draft | Turns your rough reply into a draft you review as a diff. |
+| **Needs you** | Someone else wrote last, and you're on *To*. A follow-up reminder that fired with no reply also lands here. |
+| **Waiting** | You wrote last and nobody has answered. Oldest first, for 30 days. |
+| **FYI** | You're only on *Cc*, or it went to a group. |
+| **Updates** | Newsletters, notifications, automated mail (List-Id, List-Unsubscribe, Precedence, Auto-Submitted, noreply senders, Gmail categories, Outlook's Other). |
 
-Sending is not a mode. It always asks you.
+Each thread shows a status glyph whose shape carries the meaning, so it doesn't rely on color.
 
-### Slash commands
+**Long threads stay readable**
 
-| Command | What it does |
-| --- | --- |
-| `/summarize` | Summarize the thread and list its open asks. |
-| `/plan` | Propose next steps; nothing runs until you approve. |
-| `/draft` | Edit your rough reply into a draft you review as a diff. |
-| `/schedule` | Find a slot and hold it (tentative, local only). |
-| `/followup` | Draft a nudge and set a reminder. |
-| `/triage` | Label, file attachments, pin until answered. |
-| `/undo` | Restore the previous draft checkpoint. |
+- Older messages collapse into "*N* earlier messages from *M* people" bars. Unread messages, the first one and the last three stay visible.
+- Quoted history is collapsed in every message: Gmail, Outlook, Apple Mail and plain-text styles. For Outlook it uses Exchange's own `uniqueBody`.
+- A *thread chart* in the side panel puts one dot per message, grouped by day. Reply-all storms, your own replies, unread messages and messages that ask you something are visible at a glance, and each dot jumps to its message.
+- Toolbar tools:
+  - Jump to the first unread message.
+  - Expand or collapse all (`;` and `:`).
+  - Filter by person.
+  - Show only messages to or from you.
+  - Find in thread (`⌘F`).
+- Messages note who was added to or dropped from the recipients.
+- A Files list collects every attachment in the thread, newest version first.
 
-Typing `@` suggests people, files, the calendar or a space to add as context (`@Priya Nair`, `@quote_v2.pdf`, `@calendar`, ...).
+**Brief and plan (the assistant)**
 
-### Keyboard shortcuts
+- A brief at the top of the side panel gives:
+  - where the thread stands
+  - what happened since your last reply
+  - the open asks for you, with deadlines
+  - decisions already made
+  - a suggested next step
+- Every statement cites its message (`[#12]`), and clicking a citation jumps there.
+- *Plan next steps* proposes up to four actions: reply, archive, snooze, follow up, label, unsubscribe. Each one runs only after you approve it.
+- With `ANTHROPIC_API_KEY` set, the assistant uses Claude. Without it, Tidepost falls back to a transparent heuristic summary and ask extraction.
 
-Click inside the client first so it has focus.
+**Writing and sending safely**
 
-| Key | Action |
-| --- | --- |
-| `j` / `k` | Next / previous thread |
-| `/` | Open the command list in the composer |
-| `e` | Settle the current thread |
-| `Tab` | Complete the highlighted `/` command or `@` reference |
-| `Enter` | Run (or queue, while the assistant is working) |
-| `Shift+Enter` | New line |
-| `Esc` | Leave the composer |
+- **Draft from your notes (`⌘J`).** Jot rough notes and the assistant writes three versions (Brief, Warm, Firm). You review its edits as a diff against your notes, keep or reject each one, and can roll back to any checkpoint.
+- **Checks before sending:**
+  - recipients outside your domain
+  - 15 or more recipients, with a one-click "Move Cc to Bcc"
+  - "attached" in the text but no file attached
+  - an empty subject
+  - assistant edits you haven't reviewed
+
+  The first Send shows the warnings and the second Send confirms.
+- **Undo send.** Mail waits 10 seconds by default (0–30, configurable) on the server before it leaves.
+- **Replies thread correctly.** Gmail replies carry `In-Reply-To` and `References`. Outlook uses `createReply`, `createReplyAll` and `createForward`.
+
+**Heavy-inbox tools**
+
+- **Virtualized lists** that stay fast with thousands of threads.
+- **Bulk selection** with `x`, `Shift+J/K`, `*a` or Shift-click. Large selections run as a background job with progress.
+- **Clean-up sweeps** propose bulk work first and apply it only after you review:
+  - archive old updates
+  - mark updates read
+  - archive read FYI mail
+  - bring back threads with no reply in 3 days
+- **Snooze.** The thread leaves the inbox and comes back unread at the time you choose.
+- **Follow-up reminders.** If nobody replies by then, the thread returns to Needs you.
+- **Pin to top.**
+- **One-click unsubscribe.** It uses RFC 8058 when the sender supports it, and otherwise falls back to the mailto or website method.
+- **Search.**
+  - Search runs on the provider, so it covers the whole mailbox and supports Gmail operators. Outlook uses KQL through Graph `$search`.
+  - Local full-text results appear instantly while the provider search runs.
+- **Command palette (`⌘K`)** for every action, lane and label.
+- **Gmail-compatible keyboard map.** Press `?` to see it.
+- **Several accounts** at once (Gmail and Outlook side by side).
+- **Privacy and safety.**
+  - Remote images are blocked by default; you can allow them per sender.
+  - HTML mail is sanitized with DOMPurify and rendered in a sandboxed iframe with a strict CSP.
+- **Settings.** Light/dark theme, compact or comfortable density, reading pane or full width.
 
 ## Running it
 
-Requires Node.js 20.19+ or 22.12+ (Vite 8).
+Requires Node.js 22.12 or newer (it uses the built-in `node:sqlite`).
 
 ```sh
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # type-check and build to dist/
-npm run preview  # serve the production build
+cp .env.example .env     # add your OAuth credentials (see below)
+npm run dev              # API on :8787, web app on http://localhost:5173
 ```
 
-## Project layout
+Open http://localhost:5173. Without credentials you can still choose **Try a demo mailbox**, which loads 2,500 realistic messages, including a 140-message reply-all thread.
 
-```
-index.html
-src/
-  main.tsx    entry point
-  App.tsx     the whole prototype: example data, scripted assistant, UI
-  kit.tsx     small page components (Page, Section, Table, Segmented, Button, ...) and theme tokens
-  index.css   light/dark color variables
+Production:
+
+```sh
+npm run build
+APP_URL=https://mail.example.com npm start   # serves the built app and the API on $PORT
 ```
 
-The prototype began as an interactive page and was ported to a plain Vite + React + TypeScript app. `kit.tsx` contains minimal local versions of the components that page used; the look follows the system light/dark setting.
+Put it behind HTTPS. Session cookies are marked `Secure` when `APP_URL` starts with `https://`.
 
-## Not in scope
+### Gmail setup
 
-- Real mail (IMAP, JMAP, Gmail or any other API).
-- A real model. The assistant's replies, plans and drafts are scripted per thread.
-- Persistence. Reloading the page resets everything.
-- Accessibility and mobile layout beyond the basics.
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Gmail API**.
+2. Configure the OAuth consent screen and add the scope `https://www.googleapis.com/auth/gmail.modify`.
+   - While the app is in *Testing* mode, add your users as test users.
+   - Gmail scopes are *restricted*. Making the app public requires Google's verification.
+3. Create credentials: **OAuth client ID**, type **Web application**.
+   - Authorized redirect URI: `http://localhost:5173/api/auth/google/callback` (or `${APP_URL}/api/auth/google/callback`).
+4. Put the client ID and secret in `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+### Outlook / Microsoft 365 setup
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com/), go to **App registrations → New registration**.
+2. Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**.
+3. Redirect URI: platform **Web**, `http://localhost:5173/api/auth/microsoft/callback`.
+4. Under **Certificates & secrets**, create a client secret.
+5. Under **API permissions**, add these Microsoft Graph *delegated* permissions: `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`.
+   - Some organizations require admin consent for mail scopes.
+6. Put the values in `.env` as `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`. Leave `MICROSOFT_TENANT=common`, or set it to your tenant ID to restrict sign-in to one organization.
+
+### Assistant (optional)
+
+Set `ANTHROPIC_API_KEY` to turn on Claude-written briefs, drafts and plans. The model defaults to `claude-opus-5-5`; change it with `TIDEPOST_AI_MODEL`.
+
+- **When briefs are made:** on demand, and automatically for threads with three or more messages. Each brief is cached until the thread changes.
+- **What is sent:** thread text goes to Anthropic's API only when a brief, draft or plan is requested.
+
+## How it works
+
+```
+browser (React, Vite)                      server (Node, Hono)                         providers
+──────────────────────                     ─────────────────────────────────           ───────────────────
+lists, reader, composer  ── /api ────────▶ routes, sessions, CSRF header check
+live updates             ◀── SSE ──────── event bus (threads, sync, runs, sends)
+                                           sync engine ── initial index + polling ───▶ Gmail API (history)
+                                           SQLite: message index, threads, lanes,      Microsoft Graph (delta)
+                                                   bodies cache, FTS5 search,          demo mailbox (in memory)
+                                                   send queue, snoozes, reminders
+                                           assistant ─────────────────────────────────▶ Anthropic API (optional)
+```
+
+- **Index first.** On sign-in the server indexes the newest 3,000 messages' headers (`TIDEPOST_SYNC_MESSAGES`). After that it polls for changes every 45 seconds, using Gmail `history` or Graph delta queries. Lists, lanes and counts are SQL queries over that local index, so they're instant even for big mailboxes.
+- **Bodies on demand.** Bodies are fetched when you open a thread and cached for later.
+- **Optimistic actions.** Archive, read, star and the rest update the local index right away and then call the provider. A failure triggers a resync.
+- **Outlook specifics.** Outlook threads are grouped by `conversationId`. Requests use immutable IDs, so messages keep their identity when moved between folders.
+- **Encryption.** OAuth tokens and queued outgoing mail are encrypted at rest with AES-256-GCM.
+
+## Development
+
+```sh
+npm run dev         # API + web with reload
+npm test            # unit tests (providers, index, lanes, MIME, diff, checks)
+npm run typecheck
+npm run verify      # builds, then runs 23 end-to-end checks in headless Chromium against the demo mailbox
+```
+
+```
+server/
+  index.ts           entry; serves dist/ in production
+  app.ts             HTTP API, OAuth callbacks, SSE
+  accounts.ts        users, sessions, encrypted tokens, provider registry
+  sync.ts            initial sync, polling, snooze/reminder scheduler
+  store.ts           message index, thread materialization, triage lanes, search
+  mail.ts            thread loading, actions, undo-send queue, unsubscribe, sweeps
+  assistant.ts       briefs, drafts, plans (Claude or heuristics)
+  providers/         gmail.ts, outlook.ts, demo/, shared HTTP + address helpers
+  auth/              Google and Microsoft OAuth (authorization code + PKCE)
+  mime.ts            RFC 5322 message builder
+shared/types.ts      types shared by server and client
+src/                 React client (components/, lib/, hooks.ts, store.ts, styles.css)
+prototype/           the original concept prototype, kept for reference
+```
 
 ## License
 
-[MIT](LICENSE) © 2026 Sankalp Mukim
+[MIT](LICENSE)
