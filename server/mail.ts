@@ -6,6 +6,7 @@ import { decrypt, encrypt, newId } from "./db";
 import { persist } from "./persist";
 import { getAccount, getUserSettings, providerFor, type AccountRow } from "./accounts";
 import { applyLocal, getMeta, getThreadSummary, indexBody, setThreadState, sweepCandidates, threadMetas } from "./store";
+import { BODY_JSON_MAX } from "./limits";
 import { ingest, refreshThread, syncNow } from "./sync";
 import { emit, setRunHandlers, startRun, updateRun, getRunEntry } from "./events";
 import { htmlToText, stripQuotedText, textToHtml, escapeHtml } from "./text";
@@ -25,7 +26,37 @@ interface StoredBody {
 
 async function cachedBody(accountId: string, messageId: string): Promise<StoredBody | null> {
   const json = await persist().getBody(accountId, messageId);
-  return json ? (JSON.parse(json) as StoredBody) : null;
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as StoredBody;
+  } catch {
+    // Corrupt row (e.g. truncated by an old size cap): treat as a miss so the
+    // body is refetched from the provider and the row is re-stored.
+    return null;
+  }
+}
+
+/** Trim body content fields so the serialized form fits the storage cap.
+ *  Never slice serialized JSON: a raw cut mid-string produces unparseable rows. */
+function clampBodyForStore(stored: StoredBody): StoredBody {
+  let out = stored;
+  for (let pass = 0; pass < 10; pass++) {
+    const json = JSON.stringify(out);
+    if (json.length <= BODY_JSON_MAX) return out;
+    // Scale the four content fields proportionally; keys, attachments and
+    // escape expansion make up the rest. Re-check each pass in case escapes
+    // still push the serialized form over the cap.
+    const lens = [out.html?.length ?? 0, out.uniqueHtml?.length ?? 0, out.text.length, out.uniqueText.length];
+    const fixed = json.length - lens.reduce((a, b) => a + b, 0);
+    const budget = Math.max(0, BODY_JSON_MAX - fixed - 256);
+    const total = lens.reduce((a, b) => a + b, 0);
+    const k = total > 0 ? Math.min(1, budget / total) : 0;
+    const cut = (s: string): string => s.slice(0, Math.ceil(s.length * k));
+    const cutN = (s: string | null): string | null => (s === null ? null : cut(s));
+    out = { ...out, html: cutN(out.html), uniqueHtml: cutN(out.uniqueHtml), text: cut(out.text), uniqueText: cut(out.uniqueText) };
+  }
+  // Pathological metadata size: fall back to a minimal valid body.
+  return { html: null, text: "", uniqueText: "", uniqueHtml: null, attachments: [] };
 }
 
 async function fetchBody(account: AccountRow, messageId: string): Promise<StoredBody> {
@@ -36,7 +67,8 @@ async function fetchBody(account: AccountRow, messageId: string): Promise<Stored
   const text = (b.text && b.text.trim()) || (b.html ? htmlToText(b.html) : "");
   const uniqueText = b.uniqueHtml ? htmlToText(b.uniqueHtml) : stripQuotedText(text);
   const stored: StoredBody = { html: b.html, text, uniqueText, uniqueHtml: b.uniqueHtml, attachments: b.attachments };
-  await persist().putBody(account.id, messageId, JSON.stringify(stored));
+  const clamped = clampBodyForStore(stored);
+  await persist().putBody(account.id, messageId, JSON.stringify(clamped));
   await indexBody(account.id, messageId, text);
   if (b.headers) {
     const meta = await getMeta(account.id, messageId);
@@ -55,7 +87,7 @@ async function fetchBody(account: AccountRow, messageId: string): Promise<Stored
     const meta = await getMeta(account.id, messageId);
     if (meta && !meta.hasAttachments) await ingest(account, [{ ...meta, hasAttachments: true }]);
   }
-  return stored;
+  return clamped;
 }
 
 function parseListUnsubscribe(meta: MessageMeta): Message["listUnsubscribe"] {

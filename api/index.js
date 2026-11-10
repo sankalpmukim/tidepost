@@ -13405,6 +13405,7 @@ function startScheduler() {
 // server/mail.ts
 import dns from "node:dns/promises";
 import net from "node:net";
+init_limits();
 
 // server/text.ts
 var ENTITIES = {
@@ -13508,7 +13509,28 @@ function firstSentence(text, max = 180) {
 init_http();
 async function cachedBody(accountId, messageId) {
   const json = await persist().getBody(accountId, messageId);
-  return json ? JSON.parse(json) : null;
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+function clampBodyForStore(stored) {
+  let out = stored;
+  for (let pass = 0; pass < 10; pass++) {
+    const json = JSON.stringify(out);
+    if (json.length <= BODY_JSON_MAX) return out;
+    const lens = [out.html?.length ?? 0, out.uniqueHtml?.length ?? 0, out.text.length, out.uniqueText.length];
+    const fixed = json.length - lens.reduce((a, b) => a + b, 0);
+    const budget = Math.max(0, BODY_JSON_MAX - fixed - 256);
+    const total = lens.reduce((a, b) => a + b, 0);
+    const k = total > 0 ? Math.min(1, budget / total) : 0;
+    const cut = (s) => s.slice(0, Math.ceil(s.length * k));
+    const cutN = (s) => s === null ? null : cut(s);
+    out = { ...out, html: cutN(out.html), uniqueHtml: cutN(out.uniqueHtml), text: cut(out.text), uniqueText: cut(out.uniqueText) };
+  }
+  return { html: null, text: "", uniqueText: "", uniqueHtml: null, attachments: [] };
 }
 async function fetchBody(account, messageId) {
   const cached = await cachedBody(account.id, messageId);
@@ -13518,7 +13540,8 @@ async function fetchBody(account, messageId) {
   const text = b.text && b.text.trim() || (b.html ? htmlToText(b.html) : "");
   const uniqueText = b.uniqueHtml ? htmlToText(b.uniqueHtml) : stripQuotedText(text);
   const stored = { html: b.html, text, uniqueText, uniqueHtml: b.uniqueHtml, attachments: b.attachments };
-  await persist().putBody(account.id, messageId, JSON.stringify(stored));
+  const clamped = clampBodyForStore(stored);
+  await persist().putBody(account.id, messageId, JSON.stringify(clamped));
   await indexBody(account.id, messageId, text);
   if (b.headers) {
     const meta = await getMeta(account.id, messageId);
@@ -13537,7 +13560,7 @@ async function fetchBody(account, messageId) {
     const meta = await getMeta(account.id, messageId);
     if (meta && !meta.hasAttachments) await ingest(account, [{ ...meta, hasAttachments: true }]);
   }
-  return stored;
+  return clamped;
 }
 function parseListUnsubscribe(meta) {
   const h = meta.bulk?.listUnsubscribe;
