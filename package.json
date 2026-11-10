@@ -10,7 +10,7 @@
     "dev:convex": "convex dev",
     "dev:api": "tsx watch --clear-screen=false server/index.ts",
     "dev:web": "vite",
-    "build": "tsc -p . && vite build && npm run build:api",
+    "build": "tsc -p . && vite build && npm run build:api && node -e \"const fs=require('fs');fs.mkdirSync('dist/app',{recursive:true});fs.copyFileSync('dist/index.html','dist/app/index.html');fs.copyFileSync('public/landing.html','dist/index.html')\"",
     "build:api": "esbuild server/vercel.ts --bundle --platform=node --format=esm --outfile=api/index.js --packages=external",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc -p .",
