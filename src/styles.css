@@ -251,6 +251,8 @@ kbd, .kbd {
   border: 1px solid transparent; background: transparent; color: var(--text-secondary);
 }
 .icon-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+.icon-btn:disabled { opacity: .45; cursor: default; }
+.icon-btn:disabled:hover { background: transparent; color: var(--text-secondary); }
 .icon-btn[aria-pressed="true"] { color: var(--accent-text); background: var(--surface-selected); }
 .icon-btn-sm { width: 28px; height: 28px; }
 
