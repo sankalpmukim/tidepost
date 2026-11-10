@@ -1,5 +1,6 @@
 // Users, sessions, accounts, token storage and provider construction.
-import { db, decrypt, encrypt, newId } from "./db";
+import { decrypt, encrypt, newId } from "./db";
+import { persist, type AccountPersistRow } from "./persist";
 import type { Account, ProviderKind, SyncState } from "../shared/types";
 import type { MailProvider, TokenSource } from "./providers/types";
 import { AuthExpiredError } from "./providers/types";
@@ -7,17 +8,7 @@ import type { TokenSet } from "./auth/types";
 
 const SESSION_DAYS = 30;
 
-export interface AccountRow {
-  id: string;
-  user_id: string;
-  provider: ProviderKind;
-  email: string;
-  name: string;
-  tokens: string | null;
-  cursor: string | null;
-  sync: string;
-  created_at: number;
-}
+export type AccountRow = AccountPersistRow;
 
 const DEFAULT_SYNC: SyncState = { phase: "idle", done: 0, total: 0, lastSyncedAt: null, error: null };
 
@@ -25,88 +16,89 @@ export function toAccount(r: AccountRow): Account {
   return { id: r.id, provider: r.provider, email: r.email, name: r.name, sync: { ...DEFAULT_SYNC, ...(JSON.parse(r.sync) as Partial<SyncState>) } };
 }
 
-// ---------- users & sessions ----------
-
-export function createUser(): string {
+export async function createUser(): Promise<string> {
   const id = newId("usr");
-  db.prepare("INSERT INTO users (id, created_at) VALUES (?, ?)").run(id, Date.now());
+  await persist().insertUser({ id, created_at: Date.now(), settings: "{}" });
   return id;
 }
 
-export function createSession(userId: string): { id: string; maxAge: number } {
+export async function createSession(userId: string): Promise<{ id: string; maxAge: number }> {
   const id = newId("ses");
   const maxAge = SESSION_DAYS * 24 * 3600;
-  db.prepare("INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?,?,?,?)").run(id, userId, Date.now(), Date.now() + maxAge * 1000);
+  await persist().insertSession({ id, user_id: userId, created_at: Date.now(), expires_at: Date.now() + maxAge * 1000 });
   return { id, maxAge };
 }
 
-export function sessionUser(sessionId: string | undefined): string | null {
+export async function sessionUser(sessionId: string | undefined): Promise<string | null> {
   if (!sessionId) return null;
-  const row = db.prepare("SELECT user_id, expires_at FROM sessions WHERE id=?").get(sessionId) as { user_id: string; expires_at: number } | undefined;
+  const row = await persist().getSession(sessionId);
   if (!row || row.expires_at < Date.now()) return null;
   return row.user_id;
 }
 
-export function deleteSession(sessionId: string): void {
-  db.prepare("DELETE FROM sessions WHERE id=?").run(sessionId);
+export async function deleteSession(sessionId: string): Promise<void> {
+  await persist().deleteSession(sessionId);
 }
 
-// ---------- accounts ----------
-
-export function listAccounts(userId: string): AccountRow[] {
-  return db.prepare("SELECT * FROM accounts WHERE user_id=? ORDER BY created_at ASC").all(userId) as unknown as AccountRow[];
+export async function listAccounts(userId: string): Promise<AccountRow[]> {
+  return persist().listAccounts(userId);
 }
 
-export function getAccount(accountId: string): AccountRow | null {
-  return (db.prepare("SELECT * FROM accounts WHERE id=?").get(accountId) as AccountRow | undefined) ?? null;
+export async function getAccount(accountId: string): Promise<AccountRow | null> {
+  return persist().getAccount(accountId);
 }
 
-/** Find the user that already owns this provider identity (to sign them back in). */
-export function findAccountByIdentity(provider: ProviderKind, email: string): AccountRow | null {
-  return (db.prepare("SELECT * FROM accounts WHERE provider=? AND email=? ORDER BY created_at ASC LIMIT 1").get(provider, email) as AccountRow | undefined) ?? null;
+export async function findAccountByIdentity(provider: ProviderKind, email: string): Promise<AccountRow | null> {
+  return persist().findAccountByIdentity(provider, email);
 }
 
-export function upsertAccount(userId: string, provider: ProviderKind, email: string, name: string, tokens: TokenSet | null): AccountRow {
-  const existing = db.prepare("SELECT * FROM accounts WHERE user_id=? AND provider=? AND email=?").get(userId, provider, email) as AccountRow | undefined;
+export async function upsertAccount(userId: string, provider: ProviderKind, email: string, name: string, tokens: TokenSet | null): Promise<AccountRow> {
+  const existing = await persist().findAccountByUserIdentity(userId, provider, email);
   const enc = tokens ? encrypt(JSON.stringify(tokens)) : null;
   if (existing) {
-    db.prepare("UPDATE accounts SET name=?, tokens=COALESCE(?, tokens), sync=? WHERE id=?").run(name, enc, JSON.stringify({ ...JSON.parse(existing.sync), error: null }), existing.id);
-    return getAccount(existing.id)!;
+    const next: AccountRow = {
+      ...existing,
+      name,
+      tokens: enc ?? existing.tokens,
+      sync: JSON.stringify({ ...JSON.parse(existing.sync), error: null }),
+    };
+    await persist().putAccount(next);
+    return (await persist().getAccount(existing.id))!;
   }
   const id = newId("acc");
-  db.prepare("INSERT INTO accounts (id, user_id, provider, email, name, tokens, cursor, sync, created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(
-    id, userId, provider, email, name, enc, null, JSON.stringify(DEFAULT_SYNC), Date.now(),
-  );
-  return getAccount(id)!;
+  const row: AccountRow = {
+    id, user_id: userId, provider, email, name, tokens: enc, cursor: null, sync: JSON.stringify(DEFAULT_SYNC), created_at: Date.now(),
+  };
+  await persist().putAccount(row);
+  return (await persist().getAccount(id))!;
 }
 
-export function removeAccount(accountId: string): void {
-  db.prepare("DELETE FROM search_fts WHERE account_id=?").run(accountId);
-  db.prepare("DELETE FROM accounts WHERE id=?").run(accountId);
+export async function removeAccount(accountId: string): Promise<void> {
+  await persist().removeAccount(accountId);
 }
 
-export function setCursor(accountId: string, cursor: string | null): void {
-  db.prepare("UPDATE accounts SET cursor=? WHERE id=?").run(cursor, accountId);
+export async function setCursor(accountId: string, cursor: string | null): Promise<void> {
+  const row = await persist().getAccount(accountId);
+  if (!row) return;
+  await persist().putAccount({ ...row, cursor });
 }
 
-export function setSync(accountId: string, patch: Partial<SyncState>): SyncState {
-  const row = getAccount(accountId);
+export async function setSync(accountId: string, patch: Partial<SyncState>): Promise<SyncState> {
+  const row = await getAccount(accountId);
   if (!row) return DEFAULT_SYNC;
   const next = { ...DEFAULT_SYNC, ...(JSON.parse(row.sync) as Partial<SyncState>), ...patch };
-  db.prepare("UPDATE accounts SET sync=? WHERE id=?").run(JSON.stringify(next), accountId);
+  await persist().putAccount({ ...row, sync: JSON.stringify(next) });
   return next;
 }
 
-export function getUserSettings(userId: string): Record<string, unknown> {
-  const row = db.prepare("SELECT settings FROM users WHERE id=?").get(userId) as { settings: string } | undefined;
+export async function getUserSettings(userId: string): Promise<Record<string, unknown>> {
+  const row = await persist().getUser(userId);
   return row ? (JSON.parse(row.settings) as Record<string, unknown>) : {};
 }
 
-export function setUserSettings(userId: string, settings: Record<string, unknown>): void {
-  db.prepare("UPDATE users SET settings=? WHERE id=?").run(JSON.stringify(settings), userId);
+export async function setUserSettings(userId: string, settings: Record<string, unknown>): Promise<void> {
+  await persist().updateUserSettings(userId, JSON.stringify(settings));
 }
-
-// ---------- token sources ----------
 
 type Refresher = (refreshToken: string) => Promise<TokenSet>;
 
@@ -114,14 +106,14 @@ export class DbTokenSource implements TokenSource {
   private inflight: Promise<string> | null = null;
   constructor(private accountId: string, private refresher: Refresher) {}
 
-  private read(): TokenSet {
-    const row = getAccount(this.accountId);
+  private async read(): Promise<TokenSet> {
+    const row = await getAccount(this.accountId);
     if (!row?.tokens) throw new AuthExpiredError();
     return JSON.parse(decrypt(row.tokens)) as TokenSet;
   }
 
   async getAccessToken(): Promise<string> {
-    const t = this.read();
+    const t = await this.read();
     if (t.expiresAt - 60_000 > Date.now()) return t.accessToken;
     return this.refresh();
   }
@@ -130,11 +122,12 @@ export class DbTokenSource implements TokenSource {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
-        const t = this.read();
+        const t = await this.read();
         if (!t.refreshToken) throw new AuthExpiredError();
         const next = await this.refresher(t.refreshToken);
         const merged: TokenSet = { ...next, refreshToken: next.refreshToken ?? t.refreshToken };
-        db.prepare("UPDATE accounts SET tokens=? WHERE id=?").run(encrypt(JSON.stringify(merged)), this.accountId);
+        const row = await getAccount(this.accountId);
+        if (row) await persist().putAccount({ ...row, tokens: encrypt(JSON.stringify(merged)) });
         return merged.accessToken;
       } finally {
         this.inflight = null;
@@ -143,8 +136,6 @@ export class DbTokenSource implements TokenSource {
     return this.inflight;
   }
 }
-
-// ---------- provider registry ----------
 
 const providers = new Map<string, MailProvider>();
 

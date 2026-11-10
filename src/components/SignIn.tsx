@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../api";
 import { useConfig } from "../hooks";
+import { setUi } from "../store";
 import { BrandMark, StatusGlyph } from "./bits";
 
 function GoogleLogo() {
@@ -39,6 +40,7 @@ export function SignIn() {
     setBusy(true);
     try {
       await api.demo();
+      setUi((s) => ({ authTick: s.authTick + 1 }));
       await qc.invalidateQueries({ queryKey: ["me"] });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't open the demo mailbox.");

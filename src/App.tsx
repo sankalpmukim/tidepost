@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "./api";
-import { useActions, useLiveEvents, useMe, visibleIds, threadFromCache } from "./hooks";
+import { useActions, useLiveEvents, useMe, visibleIds, threadFromCache, liveSummaries } from "./hooks";
 import { dismissToast, getUi, openComposer, setUi, toast, useUi, type ComposeRequest } from "./store";
 import { SignIn } from "./components/SignIn";
 import { Sidebar } from "./components/Sidebar";
@@ -17,18 +17,6 @@ import type { ThreadPage } from "../shared/types";
 export default function App() {
   const me = useMe();
   if (me.isLoading) return <div style={{ height: "100vh", display: "grid", placeItems: "center" }}><span className="spinner" /></div>;
-  if (me.error instanceof ApiError && me.error.status === 401) return <SignIn />;
-  if (me.error) {
-    return (
-      <div style={{ height: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-        <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
-          <strong>Tidepost can't reach its server.</strong>
-          <span style={{ color: "var(--text-tertiary)" }}>Start it with <code>npm run dev</code>, then reload.</span>
-          <button className="btn" onClick={() => void me.refetch()}>Try again</button>
-        </div>
-      </div>
-    );
-  }
   if (!me.data?.accounts.length) return <SignIn />;
   return <Shell />;
 }
@@ -59,6 +47,11 @@ function Shell() {
   const { perform, undo } = useActions();
   const sendToasts = useRef(new Map<string, { toastId: number; msg: OutgoingMessage; req: ComposeRequest }>());
   useTheme();
+  useEffect(() => {
+    void api.me();
+    const t = window.setInterval(() => void api.me(), 45_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Pick the account: ?account= after sign-in, else the first one.
   useEffect(() => {
@@ -148,10 +141,8 @@ function Shell() {
 }
 
 function summaryFor(qc: ReturnType<typeof useQueryClient>, id: string): ThreadSummary | null {
-  for (const [, data] of qc.getQueriesData<InfiniteData<ThreadPage>>({ queryKey: ["threads"] })) {
-    const t = data?.pages.flatMap((p) => p.threads).find((x) => x.id === id);
-    if (t) return t;
-  }
+  const live = liveSummaries().find((x) => x.id === id);
+  if (live) return live;
   for (const [, data] of qc.getQueriesData<InfiniteData<ThreadPage>>({ queryKey: ["search"] })) {
     const t = data?.pages.flatMap((p) => p.threads).find((x) => x.id === id);
     if (t) return t;

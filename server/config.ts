@@ -13,8 +13,9 @@ export const config = {
   /** Public URL the browser uses. OAuth redirect URIs are built from it. */
   appUrl: env("APP_URL", "http://localhost:5173").replace(/\/$/, ""),
   dataDir: path.resolve(env("TIDEPOST_DATA_DIR", process.env.VERCEL ? "/tmp/tidepost" : ".data")),
-  /** Secret for encrypting tokens at rest. Generated into the data dir when unset. */
+  /** Secret for encrypting tokens at rest and authorizing Convex server calls. */
   secret: env("TIDEPOST_SECRET"),
+  convexUrl: env("CONVEX_URL") || env("VITE_CONVEX_URL"),
   production: env("NODE_ENV") === "production",
 
   google: {
@@ -33,8 +34,8 @@ export const config = {
   },
   /** Allow the built-in demo mailbox (on by default; set to 0 to hide it). */
   demo: env("TIDEPOST_DEMO", "1") !== "0",
-  /** How many recent messages to index per account on first sync. */
-  initialSyncMessages: Number(env("TIDEPOST_SYNC_MESSAGES", "3000")),
+  /** How many recent messages to index per account on first sync. Capped for Convex free-tier storage. */
+  initialSyncMessages: Number(env("TIDEPOST_SYNC_MESSAGES", "800")),
   pollSeconds: Number(env("TIDEPOST_POLL_SECONDS", "45")),
 };
 

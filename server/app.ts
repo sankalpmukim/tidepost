@@ -34,8 +34,8 @@ export const DEFAULT_SETTINGS: Settings = {
   readingPane: "right",
 };
 
-function settingsFor(userId: string): Settings {
-  return { ...DEFAULT_SETTINGS, ...(getUserSettings(userId) as Partial<Settings>) };
+async function settingsFor(userId: string): Promise<Settings> {
+  return { ...DEFAULT_SETTINGS, ...((await getUserSettings(userId)) as Partial<Settings>) };
 }
 
 export const app = new Hono<Env>();
@@ -56,13 +56,14 @@ app.get("/api/config", (c) =>
     ai: aiEnabled(),
     aiModel: aiEnabled() ? config.ai.model : null,
     undoSendSeconds: DEFAULT_SETTINGS.undoSendSeconds,
+    convexUrl: config.convexUrl || process.env.VITE_CONVEX_URL || "",
   }),
 );
 
 // ---------- auth ----------
 
-function startSession(c: Context, userId: string): void {
-  const s = createSession(userId);
+async function startSession(c: Context, userId: string): Promise<void> {
+  const s = await createSession(userId);
   setCookie(c, SESSION_COOKIE, s.id, { httpOnly: true, sameSite: "Lax", secure, path: "/", maxAge: s.maxAge });
 }
 
@@ -137,11 +138,11 @@ app.get("/api/auth/:provider/callback", async (c) => {
     const email = identity.email.toLowerCase();
     // Signed in already: add this mailbox to the current user. Otherwise sign in
     // as the user that owns this mailbox, or create a new user.
-    let userId = sessionUser(getCookie(c, SESSION_COOKIE));
-    if (!userId) userId = findAccountByIdentity(kind, email)?.user_id ?? createUser();
-    const account = upsertAccount(userId, kind, email, identity.name || email, tokens);
+    let userId = await sessionUser(getCookie(c, SESSION_COOKIE));
+    if (!userId) userId = (await findAccountByIdentity(kind, email))?.user_id ?? await createUser();
+    const account = await upsertAccount(userId, kind, email, identity.name || email, tokens);
     dropProvider(account.id);
-    startSession(c, userId);
+    await startSession(c, userId);
     startPolling(account.id);
     void syncNow(account.id);
     return c.redirect(`/?account=${encodeURIComponent(account.id)}`);
@@ -153,17 +154,30 @@ app.get("/api/auth/:provider/callback", async (c) => {
 
 app.post("/api/auth/demo", async (c) => {
   if (!config.demo) return c.json({ error: "The demo mailbox is disabled on this server." }, 403);
-  let userId = sessionUser(getCookie(c, SESSION_COOKIE));
-  if (!userId) userId = createUser();
-  const account = upsertAccount(userId, "demo", "alex.morgan@northwind.example", "Alex Morgan", null);
-  startSession(c, userId);
+  let userId = await sessionUser(getCookie(c, SESSION_COOKIE));
+  if (!userId) userId = await createUser();
+  const account = await upsertAccount(userId, "demo", "alex.morgan@northwind.example", "Alex Morgan", null);
+  await startSession(c, userId);
   startPolling(account.id);
   return c.json({ accountId: account.id });
 });
 
-app.post("/api/auth/logout", (c) => {
+app.get("/api/auth/convex-token", async (c) => {
+  const userId = await sessionUser(getCookie(c, SESSION_COOKIE));
+  if (!userId) return c.json({ error: "Not signed in" }, 401);
+  try {
+    const { convexToken } = await import("./jwt");
+    const token = await convexToken(userId);
+    return c.json({ token });
+  } catch (err) {
+    console.error("[jwt]", err);
+    return c.json({ error: "Realtime auth is not configured" }, 503);
+  }
+});
+
+app.post("/api/auth/logout", async (c) => {
   const sid = getCookie(c, SESSION_COOKIE);
-  if (sid) deleteSession(sid);
+  if (sid) await deleteSession(sid);
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
   return c.json({ ok: true });
 });
@@ -173,7 +187,7 @@ app.post("/api/auth/logout", (c) => {
 const api = new Hono<Env>();
 
 api.use("*", async (c, next) => {
-  const userId = sessionUser(getCookie(c, SESSION_COOKIE));
+  const userId = await sessionUser(getCookie(c, SESSION_COOKIE));
   if (!userId) return c.json({ error: "Not signed in", code: "session" }, 401);
   // Mutations must carry a custom header: browsers won't send it cross-site without CORS.
   if (c.req.method !== "GET" && c.req.header("x-tidepost") !== "1") return c.json({ error: "Missing request header" }, 403);
@@ -181,8 +195,8 @@ api.use("*", async (c, next) => {
   await next();
 });
 
-function ownedAccount(c: Context<Env>): AccountRow {
-  const account = getAccount(c.req.param("aid") ?? "");
+async function ownedAccount(c: Context<Env>): Promise<AccountRow> {
+  const account = await getAccount(c.req.param("aid") ?? "");
   if (!account || account.user_id !== c.get("userId")) throw new HttpError(404, "Account not found");
   return account;
 }
@@ -200,67 +214,67 @@ api.onError((err, c) => {
   return c.json({ error: err instanceof Error ? err.message : "Unexpected error" }, 500);
 });
 
-api.get("/me", (c) => {
+api.get("/me", async (c) => {
   const userId = c.get("userId");
-  const accounts = listAccounts(userId);
+  const accounts = await listAccounts(userId);
   for (const a of accounts) startPolling(a.id);
-  return c.json({ accounts: accounts.map(toAccount), settings: settingsFor(userId) });
+  return c.json({ accounts: accounts.map(toAccount), settings: await settingsFor(userId) });
 });
 
 api.put("/settings", async (c) => {
   const userId = c.get("userId");
   const patch = (await c.req.json()) as Partial<Settings>;
-  const next = { ...settingsFor(userId), ...patch };
+  const next = { ...(await settingsFor(userId)), ...patch };
   next.undoSendSeconds = Math.max(0, Math.min(30, Number(next.undoSendSeconds) || 0));
-  setUserSettings(userId, next as unknown as Record<string, unknown>);
+  await setUserSettings(userId, next as unknown as Record<string, unknown>);
   return c.json(next);
 });
 
-api.delete("/accounts/:aid", (c) => {
-  const account = ownedAccount(c);
+api.delete("/accounts/:aid", async (c) => {
+  const account = await ownedAccount(c);
   stopPolling(account.id);
   dropProvider(account.id);
-  removeAccount(account.id);
+  await removeAccount(account.id);
   return c.json({ ok: true });
 });
 
 api.post("/accounts/:aid/sync", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   await syncNow(account.id);
   return c.json({ ok: true });
 });
 
 api.get("/accounts/:aid/folders", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const provider = await providerFor(account);
   return c.json(await provider.listFolders());
 });
 
-api.get("/accounts/:aid/counts", (c) => c.json(laneCounts(ownedAccount(c).id)));
+api.get("/accounts/:aid/counts", async (c) => c.json(await laneCounts((await ownedAccount(c)).id)));
 
-api.get("/accounts/:aid/threads", (c) => {
-  const account = ownedAccount(c);
+api.get("/accounts/:aid/threads", async (c) => {
+  const account = await ownedAccount(c);
   const view = c.req.query("view") ?? "inbox";
   const offset = Math.max(0, Number(c.req.query("cursor") ?? 0) || 0);
   const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 100) || 100));
-  return c.json(listThreads(account.id, view, offset, limit));
+  return c.json(await listThreads(account.id, view, offset, limit));
 });
 
 api.get("/accounts/:aid/threads/:tid", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const thread = await getThread(account, c.req.param("tid"), { refresh: c.req.query("refresh") !== "0" });
   if (!thread) return c.json({ error: "Thread not found" }, 404);
   return c.json(thread);
 });
 
 api.post("/accounts/:aid/messages", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const { ids } = (await c.req.json()) as { ids: string[] };
   return c.json(await getMessages(account, ids));
 });
 
 api.get("/accounts/:aid/messages/:mid/attachments/:att", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const provider = await providerFor(account);
   const a = await provider.getAttachment(c.req.param("mid"), c.req.param("att"));
   const inline = c.req.query("inline") === "1" && /^image\/(png|jpe?g|gif|webp)$/i.test(a.mimeType);
@@ -277,7 +291,7 @@ api.get("/accounts/:aid/messages/:mid/attachments/:att", async (c) => {
 });
 
 api.post("/accounts/:aid/actions", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const { threadIds, action } = (await c.req.json()) as { threadIds: string[]; action: ThreadAction };
   if (!Array.isArray(threadIds) || !threadIds.length) throw new HttpError(400, "No threads selected");
   if (threadIds.length > 40) {
@@ -285,32 +299,32 @@ api.post("/accounts/:aid/actions", async (c) => {
     return c.json({ run: bulkAction(account, threadIds, action, `${label} ${threadIds.length} threads`) });
   }
   await applyAction(account, threadIds, action);
-  return c.json({ threads: summariesFor(account.id, threadIds) });
+  return c.json({ threads: await summariesFor(account.id, threadIds) });
 });
 
 api.get("/accounts/:aid/search", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const q = (c.req.query("q") ?? "").trim();
   if (!q) return c.json({ threads: [], nextCursor: null, total: 0 });
   if (c.req.query("local") === "1") {
-    const threads = localSearch(account.id, q, 60);
+    const threads = await localSearch(account.id, q, 60);
     return c.json({ threads, nextCursor: null, total: threads.length });
   }
   const provider = await providerFor(account);
   const metas = await provider.search(q, 150);
-  ingest(account, metas);
+  await ingest(account, metas);
   const ids = [...new Set(metas.map((m) => m.threadId))];
-  const threads = summariesFor(account.id, ids);
+  const threads = await summariesFor(account.id, ids);
   return c.json({ threads, nextCursor: null, total: threads.length });
 });
 
-api.get("/accounts/:aid/contacts", (c) => {
-  const account = ownedAccount(c);
-  return c.json(contacts(account.id, account.email, c.req.query("q") ?? "", 8));
+api.get("/accounts/:aid/contacts", async (c) => {
+  const account = await ownedAccount(c);
+  return c.json(await contacts(account.id, account.email, c.req.query("q") ?? "", 8));
 });
 
 api.post("/accounts/:aid/send", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const msg = (await c.req.json()) as OutgoingMessage;
   const recipients = [...msg.to, ...msg.cc, ...msg.bcc];
   if (!recipients.length) throw new HttpError(400, "Add at least one recipient.");
@@ -318,29 +332,29 @@ api.post("/accounts/:aid/send", async (c) => {
   if (bad) throw new HttpError(400, `“${bad.email}” is not a valid email address.`);
   const size = msg.attachments.reduce((n, a) => n + a.data.length * 0.75, 0);
   if (size > 24 * 1024 * 1024) throw new HttpError(400, "Attachments are over 24 MB. Share large files as a link instead.");
-  const settings = settingsFor(c.get("userId"));
+  const settings = await settingsFor(c.get("userId"));
   const delay = c.req.query("now") === "1" ? 0 : settings.undoSendSeconds;
-  return c.json(enqueueSend(account, msg, delay));
+  return c.json(await enqueueSend(account, msg, delay));
 });
 
-api.get("/sends", (c) => c.json(listSends(listAccounts(c.get("userId")).map((a) => a.id))));
+api.get("/sends", async (c) => c.json(await listSends((await listAccounts(c.get("userId"))).map((a) => a.id))));
 
-api.post("/accounts/:aid/sends/:sid/cancel", (c) => {
-  const account = ownedAccount(c);
-  const res = cancelSend(account, c.req.param("sid"));
+api.post("/accounts/:aid/sends/:sid/cancel", async (c) => {
+  const account = await ownedAccount(c);
+  const res = await cancelSend(account, c.req.param("sid"));
   if (!res.ok) throw new HttpError(409, "Too late: the message has already been sent.");
   return c.json(res);
 });
 
-api.post("/accounts/:aid/sends/:sid/retry", (c) => {
-  const account = ownedAccount(c);
-  const q = retrySend(account, c.req.param("sid"));
+api.post("/accounts/:aid/sends/:sid/retry", async (c) => {
+  const account = await ownedAccount(c);
+  const q = await retrySend(account, c.req.param("sid"));
   if (!q) throw new HttpError(404, "Nothing to retry.");
   return c.json(q);
 });
 
 api.post("/accounts/:aid/threads/:tid/unsubscribe", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   return c.json(await unsubscribe(account, c.req.param("tid")));
 });
 
@@ -349,10 +363,10 @@ api.post("/accounts/:aid/threads/:tid/unsubscribe", async (c) => {
 const me = (a: AccountRow) => ({ name: a.name, email: a.email });
 
 async function buildBrief(account: AccountRow, threadId: string, refresh: boolean): Promise<ThreadBrief> {
-  const summary = getThreadSummary(account.id, threadId);
+  const summary = await getThreadSummary(account.id, threadId);
   if (!summary) throw new HttpError(404, "Thread not found");
   const basis = `${summary.messageCount}:${summary.lastDate}`;
-  const cached = getBrief(account.id, threadId);
+  const cached = await getBrief(account.id, threadId);
   if (cached && !refresh) {
     const b = JSON.parse(cached) as ThreadBrief;
     if (b.basis === basis && (b.source === "ai" || !aiEnabled())) return b;
@@ -369,14 +383,14 @@ async function buildBrief(account: AccountRow, threadId: string, refresh: boolea
     core = heuristicBrief(summary, messages, me(account));
   }
   const brief: ThreadBrief = { ...core, threadId, basis, generatedAt: new Date().toISOString() };
-  setThreadState(account.id, threadId, { brief: JSON.stringify(brief) });
+  await setThreadState(account.id, threadId, { brief: JSON.stringify(brief) });
   return brief;
 }
 
 api.get("/accounts/:aid/threads/:tid/brief", async (c) => {
-  const account = ownedAccount(c);
-  const cached = getBrief(account.id, c.req.param("tid"));
-  const summary = getThreadSummary(account.id, c.req.param("tid"));
+  const account = await ownedAccount(c);
+  const cached = await getBrief(account.id, c.req.param("tid"));
+  const summary = await getThreadSummary(account.id, c.req.param("tid"));
   if (cached && summary) {
     const b = JSON.parse(cached) as ThreadBrief;
     if (b.basis === `${summary.messageCount}:${summary.lastDate}`) return c.json(b);
@@ -387,12 +401,12 @@ api.get("/accounts/:aid/threads/:tid/brief", async (c) => {
 });
 
 api.post("/accounts/:aid/threads/:tid/brief", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   return c.json(await buildBrief(account, c.req.param("tid"), true));
 });
 
 api.post("/accounts/:aid/threads/:tid/draft", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const body = (await c.req.json()) as { notes: string; mode: string; recipients: string[]; subject: string };
   if (!aiEnabled()) return c.json(templateDraft({ me: me(account), notes: body.notes, recipients: body.recipients }));
   const messages = await threadForAssistant(account, c.req.param("tid"));
@@ -405,7 +419,7 @@ api.post("/accounts/:aid/threads/:tid/draft", async (c) => {
 
 api.post("/accounts/:aid/draft", async (c) => {
   // Draft for a brand-new message (no thread).
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const body = (await c.req.json()) as { notes: string; recipients: string[]; subject: string };
   if (!aiEnabled()) return c.json(templateDraft({ me: me(account), notes: body.notes, recipients: body.recipients }));
   try {
@@ -416,10 +430,10 @@ api.post("/accounts/:aid/draft", async (c) => {
 });
 
 api.post("/accounts/:aid/threads/:tid/plan", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const tid = c.req.param("tid");
   const { instruction } = ((await c.req.json().catch(() => ({}))) ?? {}) as { instruction?: string };
-  const summary = getThreadSummary(account.id, tid);
+  const summary = await getThreadSummary(account.id, tid);
   if (!summary) throw new HttpError(404, "Thread not found");
   let plan: Omit<Plan, "threadId">;
   if (aiEnabled()) {
@@ -439,7 +453,7 @@ api.post("/accounts/:aid/threads/:tid/plan", async (c) => {
 
 api.post("/accounts/:aid/threads/:tid/plan/run", async (c) => {
   // Execute one approved, non-reply plan step.
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const tid = c.req.param("tid");
   const { kind, params } = (await c.req.json()) as { kind: string; params: Record<string, string> };
   const days = Number(params.days ?? 1) || 1;
@@ -467,9 +481,9 @@ api.post("/accounts/:aid/threads/:tid/plan/run", async (c) => {
 api.get("/runs", (c) => c.json(listRuns(c.get("userId"))));
 
 api.post("/accounts/:aid/sweeps", async (c) => {
-  const account = ownedAccount(c);
+  const account = await ownedAccount(c);
   const { kind } = (await c.req.json()) as { kind: SweepKind };
-  return c.json(startSweep(account, kind));
+  return c.json(await startSweep(account, kind));
 });
 
 api.post("/runs/:rid/:op", async (c) => {

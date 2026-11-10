@@ -3,6 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 if (fs.existsSync(".env")) process.loadEnvFile(".env");
+if (fs.existsSync(".env.local")) process.loadEnvFile(".env.local");
+
+const { initPersist } = await import("./persist");
+await initPersist();
 
 const { serve } = await import("@hono/node-server");
 const { serveStatic } = await import("@hono/node-server/serve-static");

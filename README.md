@@ -83,12 +83,21 @@ Each thread shows a status glyph whose shape carries the meaning, so it doesn't 
 
 ## Running it
 
-Requires Node.js 22.12 or newer (it uses the built-in `node:sqlite`).
+Requires Node.js 22.12 or newer. Durable data lives in [Convex](https://www.convex.dev) (users, sessions, the message index, send queue). Tests use an in-memory store.
 
 ```sh
 npm install
 cp .env.example .env     # add your OAuth credentials (see below)
-npm run dev              # API on :8787, web app on http://localhost:5173
+npx convex dev --once    # creates a free Convex project and writes CONVEX_URL
+npm run dev              # Convex + API on :8787 + web app on http://localhost:5173
+```
+
+Set `TIDEPOST_SECRET` in `.env` (and in Vercel) so OAuth tokens stay decryptable across deploys. Copy `CONVEX_URL` from `.env.local` into Vercel env, and set the same secret on the Convex deployment as `TIDEPOST_SERVER_SECRET`:
+
+```sh
+npx convex env set TIDEPOST_SERVER_SECRET "$TIDEPOST_SECRET"
+vercel env add TIDEPOST_SECRET
+vercel env add CONVEX_URL
 ```
 
 Open http://localhost:5173. Without credentials you can still choose **Try a demo mailbox**, which loads 2,500 realistic messages, including a 140-message reply-all thread.
@@ -137,14 +146,14 @@ browser (React, Vite)                      server (Node, Hono)                  
 lists, reader, composer  ── /api ────────▶ routes, sessions, CSRF header check
 live updates             ◀── SSE ──────── event bus (threads, sync, runs, sends)
                                            sync engine ── initial index + polling ───▶ Gmail API (history)
-                                           SQLite: message index, threads, lanes,      Microsoft Graph (delta)
-                                                   bodies cache, FTS5 search,          demo mailbox (in memory)
-                                                   send queue, snoozes, reminders
+                                           Convex: message index, threads, lanes,      Microsoft Graph (delta)
+                                                   capped body cache, send queue,          demo mailbox (in memory)
+                                                   snoozes, reminders
                                            assistant ─────────────────────────────────▶ Anthropic API (optional)
 ```
 
-- **Index first.** On sign-in the server indexes the newest 3,000 messages' headers (`TIDEPOST_SYNC_MESSAGES`). After that it polls for changes every 45 seconds, using Gmail `history` or Graph delta queries. Lists, lanes and counts are SQL queries over that local index, so they're instant even for big mailboxes.
-- **Bodies on demand.** Bodies are fetched when you open a thread and cached for later.
+- **Index first.** On sign-in the server indexes the newest 800 messages' headers (`TIDEPOST_SYNC_MESSAGES`; raise it only if you have Convex headroom). After that it polls for changes every 45 seconds, using Gmail `history` or Graph delta queries. Lists, lanes and counts run over that Convex index.
+- **Bodies on demand.** Bodies are fetched when you open a thread and a small recent cache is kept in Convex (not the whole mailbox) so the free tier stays comfortable.
 - **Optimistic actions.** Archive, read, star and the rest update the local index right away and then call the provider. A failure triggers a resync.
 - **Outlook specifics.** Outlook threads are grouped by `conversationId`. Requests use immutable IDs, so messages keep their identity when moved between folders.
 - **Encryption.** OAuth tokens and queued outgoing mail are encrypted at rest with AES-256-GCM.
@@ -165,6 +174,8 @@ server/
   accounts.ts        users, sessions, encrypted tokens, provider registry
   sync.ts            initial sync, polling, snooze/reminder scheduler
   store.ts           message index, thread materialization, triage lanes, search
+  persist.ts         Convex or in-memory storage
+convex/              Convex schema and server functions
   mail.ts            thread loading, actions, undo-send queue, unsubscribe, sweeps
   assistant.ts       briefs, drafts, plans (Claude or heuristics)
   providers/         gmail.ts, outlook.ts, demo/, shared HTTP + address helpers

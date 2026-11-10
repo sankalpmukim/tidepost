@@ -7,4 +7,8 @@ api/index.js
 .env*
 *.log
 .data/
+.jwt-private.pem
+.chrome-oauth-profile/
+.agents/
+.claude/
 !.env.example

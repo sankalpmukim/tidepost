@@ -1,15 +1,51 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { useQuery as useConvexQuery } from "convex/react";
+import { api as convexApi } from "../convex/_generated/api";
 import { api, ApiError } from "./api";
 import { getUi, setUi, toast, useUi, type UndoEntry } from "./store";
-import type { Account, QueuedSend, Run, Thread, ThreadAction, ThreadPage, ThreadSummary } from "../shared/types";
+import type { Account, QueuedSend, Run, Settings, Thread, ThreadAction, ThreadPage, ThreadSummary } from "../shared/types";
+
+export function useNow(): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
 
 export function useConfig() {
   return useQuery({ queryKey: ["config"], queryFn: api.config, staleTime: Infinity });
 }
 
-export function useMe() {
-  return useQuery({ queryKey: ["me"], queryFn: api.me, retry: false, staleTime: 60_000 });
+const EMPTY_ME = {
+  accounts: [] as Account[],
+  settings: {
+    undoSendSeconds: 10,
+    signature: "",
+    density: "comfortable" as const,
+    loadRemoteImages: "ask" as const,
+    theme: "system" as const,
+    readingPane: "right" as const,
+  },
+};
+
+export function useMe(): {
+  data: { accounts: Account[]; settings: Settings } | undefined;
+  isLoading: boolean;
+  isPending: boolean;
+  error: Error | null;
+  refetch: () => Promise<unknown>;
+} {
+  const data = useConvexQuery(convexApi.live.me);
+  return {
+    data: data === undefined ? undefined : (data ?? EMPTY_ME),
+    isLoading: data === undefined,
+    isPending: data === undefined,
+    error: null,
+    refetch: async () => data,
+  };
 }
 
 export function useAccount(): Account | null {
@@ -19,30 +55,60 @@ export function useAccount(): Account | null {
 }
 
 export function useCounts(aid: string | null) {
-  return useQuery({ queryKey: ["counts", aid], queryFn: () => api.counts(aid!), enabled: !!aid, refetchInterval: 60_000 });
+  const now = useNow();
+  const data = useConvexQuery(convexApi.live.counts, aid ? { accountId: aid, now } : "skip");
+  return { data: data ?? undefined, isLoading: aid ? data === undefined : false };
 }
 
 export function useFolders(aid: string | null) {
   return useQuery({ queryKey: ["folders", aid], queryFn: () => api.folders(aid!), enabled: !!aid, staleTime: 120_000 });
 }
 
+let lastVisibleIds: string[] = [];
+let lastThreadSummaries: ThreadSummary[] = [];
+
+export function liveSummaries(): ThreadSummary[] {
+  return lastThreadSummaries;
+}
+
 export function useThreads(aid: string | null, view: string, search: string) {
-  return useInfiniteQuery({
-    queryKey: view === "search" ? ["search", aid, search] : ["threads", aid, view],
-    queryFn: async ({ pageParam }): Promise<ThreadPage> => {
-      if (view === "search") return api.search(aid!, search);
-      return api.threads(aid!, view, pageParam);
-    },
+  const now = useNow();
+  const live = useConvexQuery(
+    convexApi.live.threads,
+    aid && view !== "search" ? { accountId: aid, view, now } : "skip",
+  );
+  const remote = useInfiniteQuery({
+    queryKey: ["search", aid, search],
+    queryFn: async (): Promise<ThreadPage> => api.search(aid!, search),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
-    enabled: !!aid && (view !== "search" || !!search.trim()),
+    enabled: !!aid && view === "search" && !!search.trim(),
     staleTime: 15_000,
-    placeholderData: (prev) => prev,
   });
+  if (view === "search") return remote;
+  const page: ThreadPage | undefined = live ? { threads: live.threads, total: live.total, nextCursor: null } : undefined;
+  if (page) {
+    lastVisibleIds = page.threads.map((t) => t.id);
+    lastThreadSummaries = page.threads;
+  }
+  return {
+    data: page ? { pages: [page], pageParams: [null] } : undefined,
+    isFetching: live === undefined,
+    isPending: live === undefined,
+    isLoading: live === undefined,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: async () => undefined,
+  };
 }
 
 export function useLocalSearch(aid: string | null, q: string, enabled: boolean) {
-  return useQuery({ queryKey: ["local-search", aid, q], queryFn: () => api.search(aid!, q, true), enabled: !!aid && enabled && q.trim().length > 1, staleTime: 10_000 });
+  const now = useNow();
+  const data = useConvexQuery(
+    convexApi.live.localSearch,
+    aid && enabled && q.trim().length > 1 ? { accountId: aid, q, now } : "skip",
+  );
+  return { data: data ? { threads: data, nextCursor: null, total: data.length } : undefined, isFetching: enabled && data === undefined };
 }
 
 export function useThread(aid: string | null, tid: string | null) {
@@ -64,7 +130,9 @@ export function useRuns() {
 }
 
 export function useSends() {
-  return useQuery({ queryKey: ["sends"], queryFn: api.sends, staleTime: 10_000 });
+  const now = useNow();
+  const data = useConvexQuery(convexApi.live.sends, { now });
+  return { data: data ?? undefined };
 }
 
 // ---------- live updates ----------
@@ -81,36 +149,24 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
   const qc = useQueryClient();
   const sendRef = useRef(onSend);
   sendRef.current = onSend;
+  const sends = useSends().data;
+  const prevStatus = useRef(new Map<string, QueuedSend["status"]>());
+  useEffect(() => {
+    if (!sends) return;
+    for (const s of sends) {
+      const prev = prevStatus.current.get(s.id);
+      if (prev && prev !== s.status) sendRef.current(s);
+    }
+    prevStatus.current = new Map(sends.map((s: QueuedSend) => [s.id, s.status]));
+  }, [sends]);
   useEffect(() => {
     let es: EventSource | null = null;
     let retry: number | undefined;
-    const pending = new Map<string, Set<string>>();
-    let flushTimer: number | undefined;
-    const flush = () => {
-      flushTimer = undefined;
-      for (const [aid, tids] of pending) {
-        void qc.invalidateQueries({ queryKey: ["threads", aid] });
-        void qc.invalidateQueries({ queryKey: ["counts", aid] });
-        const open = getUi().openThreadId;
-        if (open && tids.has(open)) void qc.invalidateQueries({ queryKey: ["thread", aid, open] });
-      }
-      pending.clear();
-    };
     const connect = () => {
       es = new EventSource("/api/events");
       es.onmessage = (msg) => {
         const e = JSON.parse(msg.data as string) as ServerEvent;
         switch (e.type) {
-          case "threads": {
-            const set = pending.get(e.accountId) ?? new Set<string>();
-            e.threadIds.forEach((t) => set.add(t));
-            pending.set(e.accountId, set);
-            if (!flushTimer) flushTimer = window.setTimeout(flush, 350);
-            break;
-          }
-          case "sync":
-            qc.setQueryData<{ accounts: Account[] }>(["me"], (old) => (old ? { ...old, accounts: old.accounts.map((a) => (a.id === e.accountId ? { ...a, sync: e.sync } : a)) } : old));
-            break;
           case "run":
             qc.setQueryData<Run[]>(["runs"], (old) => {
               const list = old ?? [];
@@ -118,19 +174,18 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
               return i >= 0 ? list.map((r) => (r.id === e.run.id ? e.run : r)) : [e.run, ...list];
             });
             break;
-          case "send":
-            qc.setQueryData<QueuedSend[]>(["sends"], (old) => {
-              const list = old ?? [];
-              const i = list.findIndex((s) => s.id === e.send.id);
-              return i >= 0 ? list.map((s) => (s.id === e.send.id ? e.send : s)) : [e.send, ...list];
-            });
-            sendRef.current(e.send);
-            break;
           case "folders":
             void qc.invalidateQueries({ queryKey: ["folders", e.accountId] });
             break;
           case "auth":
             toast({ text: `${e.message}`, tone: "error", sticky: true, action: { label: "Sign in again", run: () => { window.location.href = "/api/auth/google/start"; } } });
+            break;
+          case "threads": {
+            const open = getUi().openThreadId;
+            if (open && e.threadIds.includes(open)) void qc.invalidateQueries({ queryKey: ["thread", e.accountId, open] });
+            break;
+          }
+          default:
             break;
         }
       };
@@ -143,7 +198,6 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
     return () => {
       es?.close();
       if (retry) clearTimeout(retry);
-      if (flushTimer) clearTimeout(flushTimer);
     };
   }, [qc]);
 }
@@ -204,9 +258,9 @@ function patchLists(qc: QueryClient, aid: string, fn: (view: string, t: ThreadSu
 /** Visible thread ids in the current list, in order. */
 export function visibleIds(qc: QueryClient): string[] {
   const { accountId, view, search } = getUi();
-  const key = view === "search" ? ["search", accountId, search] : ["threads", accountId, view];
-  const data = qc.getQueryData<InfiniteData<ThreadPage>>(key);
-  return data ? data.pages.flatMap((p) => p.threads.map((t) => t.id)) : [];
+  if (view !== "search") return lastVisibleIds;
+  const data = qc.getQueryData<InfiniteData<ThreadPage>>(["search", accountId, search]);
+  return data ? data.pages.flatMap((p) => p.threads.map((t) => t.id)) : lastVisibleIds;
 }
 
 export function useActions() {
@@ -239,6 +293,14 @@ export function useActions() {
       if (action.type === "unpin") return { ...t, pinned: false };
       return t;
     });
+    lastThreadSummaries = lastThreadSummaries
+      .map((t) => {
+        if (!ids.has(t.id)) return t;
+        if (LEAVES_VIEW[action.type]?.(getUi().view)) return null;
+        return t;
+      })
+      .filter((t): t is ThreadSummary => !!t);
+    lastVisibleIds = lastThreadSummaries.map((t) => t.id);
     setUi((s) => ({ checked: new Set([...s.checked].filter((id) => !ids.has(id))) }));
     try {
       const res = await api.action(aid, threadIds, action);

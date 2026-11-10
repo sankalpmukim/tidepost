@@ -280,6 +280,7 @@ export interface AppConfig {
   ai: boolean;
   aiModel: string | null;
   undoSendSeconds: number;
+  convexUrl: string;
 }
 
 export interface Settings {

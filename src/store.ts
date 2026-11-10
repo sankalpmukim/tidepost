@@ -56,6 +56,7 @@ export interface UiState {
   visibleMsgs: string[];
   /** Messages the assistant says contain asks for you. */
   askMsgs: string[];
+  authTick: number;
 }
 
 let state: UiState = {
@@ -77,6 +78,7 @@ let state: UiState = {
   onlyMine: false,
   visibleMsgs: [],
   askMsgs: [],
+  authTick: 0,
 };
 
 function readRail(): boolean {
