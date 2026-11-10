@@ -1,9 +1,20 @@
-import { handle } from "hono/vercel";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { getRequestListener } from "@hono/node-server";
 import { app } from "./app";
 import { startScheduler } from "./sync";
 import { startQueue } from "./mail";
 
-startScheduler();
-startQueue();
+let booted = false;
+function boot(): void {
+  if (booted) return;
+  booted = true;
+  startScheduler();
+  startQueue();
+}
 
-export default handle(app);
+const listener = getRequestListener(app.fetch);
+
+export default function handler(req: IncomingMessage, res: ServerResponse): void {
+  boot();
+  void listener(req, res);
+}
