@@ -14343,7 +14343,8 @@ var DEFAULT_SETTINGS = {
   density: "comfortable",
   loadRemoteImages: "ask",
   theme: "system",
-  readingPane: "right"
+  readingPane: "right",
+  onboardedAt: 0
 };
 async function settingsFor(userId) {
   return { ...DEFAULT_SETTINGS, ...await getUserSettings(userId) };
@@ -14393,7 +14394,7 @@ app.get("/api/auth/:provider/start", async (c) => {
     const { microsoftAuthUrl: microsoftAuthUrl2 } = await Promise.resolve().then(() => (init_microsoft(), microsoft_exports));
     return c.redirect(microsoftAuthUrl2({ state, codeChallenge: challenge, loginHint }));
   } catch (err) {
-    return c.redirect(`/?auth_error=${encodeURIComponent(err instanceof Error ? err.message : "Sign-in is not configured")}`);
+    return c.redirect(`/app?auth_error=${encodeURIComponent(err instanceof Error ? err.message : "Sign-in is not configured")}`);
   }
 });
 app.get("/api/auth/:provider/callback", async (c) => {

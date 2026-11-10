@@ -57,6 +57,8 @@ export interface UiState {
   /** Messages the assistant says contain asks for you. */
   askMsgs: string[];
   authTick: number;
+  /** The first-run walkthrough is open (from settings or "show again"). */
+  tour: boolean;
 }
 
 let state: UiState = {
@@ -79,6 +81,7 @@ let state: UiState = {
   visibleMsgs: [],
   askMsgs: [],
   authTick: 0,
+  tour: false,
 };
 
 function readRail(): boolean {

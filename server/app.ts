@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   loadRemoteImages: "ask",
   theme: "system",
   readingPane: "right",
+  onboardedAt: 0,
 };
 
 async function settingsFor(userId: string): Promise<Settings> {

@@ -17,6 +17,8 @@ Tidepost started as [a concept prototype](prototype/) asking what an email clien
 
 Each thread shows a status glyph whose shape carries the meaning, so it doesn't rely on color.
 
+**A first-run walkthrough.** The first time a mailbox opens, a short keyboard-driven tour covers the four lanes, the main keys and what to expect — including live progress while the mailbox indexes. It runs once per user (restart it from Settings or the shortcuts dialog).
+
 **Long threads stay readable**
 
 - Older messages collapse into "*N* earlier messages from *M* people" bars. Unread messages, the first one and the last three stay visible.
