@@ -1,7 +1,7 @@
 node_modules/
 dist/
 .vercel/
-api/index.js
+api/index.js.bundle
 *.tsbuildinfo
 .DS_Store
 .env*
