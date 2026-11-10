@@ -151,6 +151,25 @@ describe("outgoing replies", () => {
   });
 });
 
+describe("actions", () => {
+  it("trashes every message of a long thread so it leaves the view (regression: writes were silently capped at 40)", async () => {
+    const metas = Array.from({ length: 60 }, () => msg({ threadId: "t-long" }));
+    await store.upsertMessages(accountId, ME, metas);
+    expect((await store.getThreadSummary(accountId, "t-long"))?.inInbox).toBe(true);
+
+    const account = (await accounts.getAccount(accountId))!;
+    await mail.applyAction(account, ["t-long"], { type: "trash" });
+
+    const after = await store.getThreadSummary(accountId, "t-long");
+    expect(after?.folders).toContain("TRASH");
+    expect(after?.folders).not.toContain("INBOX");
+    const needs = (await store.listThreads(accountId, "needs", 0, 100)).threads.map((t) => t.id);
+    expect(needs).not.toContain("t-long");
+    const trash = (await store.listThreads(accountId, "trash", 0, 100)).threads.map((t) => t.id);
+    expect(trash).toContain("t-long");
+  });
+});
+
 describe("text helpers", () => {
   it("strips quoted history and signatures from plain text", () => {
     const t = "Sounds good, ship it.\n\nThanks\n-- \nDana\n\nOn Tue, Oct 14, 2025 at 9:12 AM Priya <p@x.example> wrote:\n> Can we ship?\n> Thanks";

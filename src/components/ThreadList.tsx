@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Archive, Clock, Mail, MailOpen, Paperclip, Pin, Search, Star, Trash2, Users, X, RefreshCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAccount, useActions, useCounts, useLocalSearch, useMe, useThreads } from "../hooks";
+import { projectThreadList, useOptimisticRevision } from "../optimistic";
 import { setUi, toast, useUi } from "../store";
 import { api, ApiError } from "../api";
 import { Menu, StatusGlyph, snoozeOptions, LANE_WORDS } from "./bits";
@@ -52,12 +53,23 @@ export function ThreadList() {
 
   useEffect(() => setDraft(view === "search" ? search : ""), [search, view]);
 
-  const threads: ThreadSummary[] = useMemo(() => {
-    if (q.data) return q.data.pages.flatMap((p) => p.threads);
-    if (view === "search" && local.data) return local.data.threads;
-    return [];
-  }, [q.data, local.data, view]);
-  const total = q.data?.pages[0]?.total ?? threads.length;
+  // Non-search lists come back from useThreads already projected through the
+  // optimistic overlay; search results (react-query / local index) project here.
+  const optimisticRev = useOptimisticRevision();
+  const { threads, searchHidden } = useMemo(() => {
+    const project = (list: ThreadSummary[]) => (aid ? projectThreadList(aid, "search", list) : { threads: list, hidden: 0 });
+    if (q.data) {
+      if (view !== "search") return { threads: q.data.pages.flatMap((p) => p.threads), searchHidden: 0 };
+      const p = project(q.data.pages.flatMap((p) => p.threads));
+      return { threads: p.threads, searchHidden: p.hidden };
+    }
+    if (view === "search" && local.data) {
+      const p = project(local.data.threads);
+      return { threads: p.threads, searchHidden: p.hidden };
+    }
+    return { threads: [] as ThreadSummary[], searchHidden: 0 };
+  }, [q.data, local.data, view, aid, optimisticRev]);
+  const total = Math.max(0, (q.data?.pages[0]?.total ?? threads.length) - (view === "search" ? searchHidden : 0));
 
   const virt = useVirtualizer({
     count: threads.length,

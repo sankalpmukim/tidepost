@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type Que
 import { useQuery as useConvexQuery } from "convex/react";
 import { api as convexApi } from "../convex/_generated/api";
 import { api, ApiError } from "./api";
+import { LEAVES_VIEW, projectThreadList, rollbackAction, stageAction, useOptimisticRevision } from "./optimistic";
 import { getUi, setUi, toast, useUi, type UndoEntry } from "./store";
 import type { Account, QueuedSend, Run, Settings, Thread, ThreadAction, ThreadPage, ThreadSummary } from "../shared/types";
 
@@ -74,6 +75,8 @@ export function liveSummaries(): ThreadSummary[] {
 
 export function useThreads(aid: string | null, view: string, search: string) {
   const now = useNow();
+  // Re-render when optimistic entries change so the list moves with actions.
+  useOptimisticRevision();
   const live = useConvexQuery(
     convexApi.live.threads,
     aid && view !== "search" ? { accountId: aid, view, now } : "skip",
@@ -87,16 +90,27 @@ export function useThreads(aid: string | null, view: string, search: string) {
     staleTime: 15_000,
   });
   if (view === "search") return remote;
-  const page: ThreadPage | undefined = live ? { threads: live.threads, total: live.total, nextCursor: null } : undefined;
-  if (page) {
-    lastVisibleIds = page.threads.map((t) => t.id);
-    lastThreadSummaries = page.threads;
+  const isLoading = live === undefined;
+  if (live && aid) {
+    const { threads: shown, hidden } = projectThreadList(aid, view, live.threads);
+    lastVisibleIds = shown.map((t) => t.id);
+    lastThreadSummaries = shown;
+    const projected: ThreadPage = { threads: shown, total: Math.max(0, live.total - hidden), nextCursor: null };
+    return {
+      data: { pages: [projected], pageParams: [null] },
+      isFetching: isLoading,
+      isPending: isLoading,
+      isLoading,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: async () => undefined,
+    };
   }
   return {
-    data: page ? { pages: [page], pageParams: [null] } : undefined,
-    isFetching: live === undefined,
-    isPending: live === undefined,
-    isLoading: live === undefined,
+    data: undefined,
+    isFetching: isLoading,
+    isPending: isLoading,
+    isLoading,
     hasNextPage: false,
     isFetchingNextPage: false,
     fetchNextPage: async () => undefined,
@@ -205,56 +219,12 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
 
 // ---------- actions ----------
 
-const LEAVES_VIEW: Partial<Record<ThreadAction["type"], (view: string) => boolean>> = {
-  archive: (v) => v !== "all" && v !== "search" && v !== "starred" && v !== "sent" && v !== "waiting" && !v.startsWith("folder:"),
-  trash: () => true,
-  spam: () => true,
-  snooze: (v) => v !== "snoozed",
-  unsnooze: (v) => v === "snoozed",
-  move: (v) => v !== "all" && v !== "search",
-  stopWaiting: (v) => v === "waiting",
-  read: (v) => v === "fyi-unread",
-  unstar: (v) => v === "starred",
-  inbox: (v) => v === "archive" || v === "trash" || v === "spam",
-};
-
-function inverseOf(a: ThreadAction): ThreadAction | null {
-  switch (a.type) {
-    case "archive": return { type: "inbox" };
-    case "inbox": return { type: "archive" };
-    case "trash": return { type: "inbox" };
-    case "spam": return { type: "inbox" };
-    case "read": return { type: "unread" };
-    case "unread": return { type: "read" };
-    case "star": return { type: "unstar" };
-    case "unstar": return { type: "star" };
-    case "pin": return { type: "unpin" };
-    case "unpin": return { type: "pin" };
-    case "snooze": return { type: "unsnooze" };
-    case "remind": return { type: "unremind" };
-    case "label": return { type: "unlabel", folderId: a.folderId };
-    case "unlabel": return { type: "label", folderId: a.folderId };
-    default: return null;
-  }
-}
-
 const PAST: Partial<Record<ThreadAction["type"], string>> = {
   archive: "Archived", inbox: "Moved to inbox", trash: "Moved to trash", spam: "Reported as spam", read: "Marked read",
   unread: "Marked unread", star: "Starred", unstar: "Unstarred", pin: "Pinned", unpin: "Unpinned", snooze: "Snoozed",
   unsnooze: "Unsnoozed", remind: "Follow-up reminder set", unremind: "Reminder removed", label: "Labelled", unlabel: "Label removed",
   move: "Moved", stopWaiting: "Stopped waiting",
 };
-
-function patchLists(qc: QueryClient, aid: string, fn: (view: string, t: ThreadSummary) => ThreadSummary | null) {
-  for (const [key, data] of qc.getQueriesData<InfiniteData<ThreadPage>>({ queryKey: ["threads", aid] })) {
-    if (!data) continue;
-    const view = String(key[2]);
-    qc.setQueryData<InfiniteData<ThreadPage>>(key, {
-      ...data,
-      pages: data.pages.map((p) => ({ ...p, threads: p.threads.map((t) => fn(view, t)).filter((t): t is ThreadSummary => !!t) })),
-    });
-  }
-}
 
 /** Visible thread ids in the current list, in order. */
 export function visibleIds(qc: QueryClient): string[] {
@@ -283,25 +253,8 @@ export function useActions() {
         setUi((s) => ({ focusedThreadId: next, openThreadId: s.openThreadId && ids.has(s.openThreadId) ? next : s.openThreadId }));
       }
     }
-    patchLists(qc, aid, (v, t) => {
-      if (!ids.has(t.id)) return t;
-      if (LEAVES_VIEW[action.type]?.(v)) return null;
-      if (action.type === "read") return { ...t, unreadCount: 0 };
-      if (action.type === "unread") return { ...t, unreadCount: Math.max(1, t.unreadCount) };
-      if (action.type === "star") return { ...t, starred: true };
-      if (action.type === "unstar") return { ...t, starred: false };
-      if (action.type === "pin") return { ...t, pinned: true };
-      if (action.type === "unpin") return { ...t, pinned: false };
-      return t;
-    });
-    lastThreadSummaries = lastThreadSummaries
-      .map((t) => {
-        if (!ids.has(t.id)) return t;
-        if (LEAVES_VIEW[action.type]?.(getUi().view)) return null;
-        return t;
-      })
-      .filter((t): t is ThreadSummary => !!t);
-    lastVisibleIds = lastThreadSummaries.map((t) => t.id);
+    // Optimistic: the list moves now; the entries roll back if the server rejects.
+    stageAction(aid, view, threadIds, action);
     setUi((s) => ({ checked: new Set([...s.checked].filter((id) => !ids.has(id))) }));
     try {
       const res = await api.action(aid, threadIds, action);
@@ -314,6 +267,7 @@ export function useActions() {
         toast({ text: what, action: undo ? { label: "Undo", run: () => void runUndo(undo) } : undefined }, 4000);
       }
     } catch (err) {
+      rollbackAction(aid, threadIds);
       toast({ text: err instanceof ApiError ? err.message : "That didn't work. Try again.", tone: "error" });
     } finally {
       void qc.invalidateQueries({ queryKey: ["threads", aid] });
@@ -324,10 +278,13 @@ export function useActions() {
 
   const runUndo = async (u: UndoEntry) => {
     setUi({ undo: null });
+    const { accountId: aid, view } = getUi();
+    if (aid) stageAction(aid, view, u.threadIds, u.inverse);
     try {
       await api.action(u.accountId, u.threadIds, u.inverse);
       toast({ text: "Undone" }, 2000);
     } catch (err) {
+      if (aid) rollbackAction(aid, u.threadIds);
       toast({ text: err instanceof ApiError ? err.message : "Couldn't undo.", tone: "error" });
     }
     void qc.invalidateQueries({ queryKey: ["threads", u.accountId] });
@@ -335,6 +292,26 @@ export function useActions() {
   };
 
   return { perform, undo: () => { const u = getUi().undo; if (u) void runUndo(u); else toast({ text: "Nothing to undo" }, 1500); } };
+}
+
+function inverseOf(a: ThreadAction): ThreadAction | null {
+  switch (a.type) {
+    case "archive": return { type: "inbox" };
+    case "inbox": return { type: "archive" };
+    case "trash": return { type: "inbox" };
+    case "spam": return { type: "inbox" };
+    case "read": return { type: "unread" };
+    case "unread": return { type: "read" };
+    case "star": return { type: "unstar" };
+    case "unstar": return { type: "star" };
+    case "pin": return { type: "unpin" };
+    case "unpin": return { type: "pin" };
+    case "snooze": return { type: "unsnooze" };
+    case "remind": return { type: "unremind" };
+    case "label": return { type: "unlabel", folderId: a.folderId };
+    case "unlabel": return { type: "label", folderId: a.folderId };
+    default: return null;
+  }
 }
 
 export function threadFromCache(qc: QueryClient, aid: string, tid: string): Thread | undefined {

@@ -78,7 +78,7 @@ export async function upsertMessages(accountId: string, me: string, metas: Messa
   const prev = await persist().putMessages(metas.map((m) => metaToRow(accountId, m)));
   for (const p of prev) threads.add(p.thread_id);
   for (const m of metas) threads.add(m.threadId);
-  for (const t of threads) await rebuildThread(accountId, me, t);
+  await rebuildThreads(accountId, me, [...threads]);
   await persist().pruneOldestMessages(accountId);
   return [...threads];
 }
@@ -87,7 +87,7 @@ export async function deleteMessages(accountId: string, me: string, ids: string[
   if (!ids.length) return [];
   const prev = await persist().deleteMessages(accountId, ids);
   const threads = new Set(prev.map((p) => p.thread_id));
-  for (const t of threads) await rebuildThread(accountId, me, t);
+  await rebuildThreads(accountId, me, [...threads]);
   return [...threads];
 }
 
@@ -133,62 +133,76 @@ export async function threadMetas(accountId: string, threadId: string): Promise<
   return rows.map(rowToMeta);
 }
 
-async function rebuildThread(accountId: string, me: string, threadId: string): Promise<void> {
-  const all = await threadMetas(accountId, threadId);
-  const msgs = all.filter((m) => !m.folders.includes("DRAFT"));
-  if (!msgs.length) {
-    await persist().deleteThread(accountId, threadId);
-    return;
-  }
-  const last = msgs[msgs.length - 1];
-  const lastFromMe = isFromMe(last, me);
-  const others = msgs.filter((m) => !isFromMe(m, me));
-  const lastOther = others[others.length - 1] ?? null;
-  const anyMine = msgs.some((m) => isFromMe(m, me));
-  const toMeDirect = lastOther
-    ? lastOther.to.some((p) => p.email === me) || (lastOther.to.length === 0 && lastOther.cc.length === 0)
-    : false;
-  const isBulk = !anyMine && !!lastOther && messageIsBulk(lastOther);
-  const senders: Person[] = [];
-  const seen = new Set<string>();
-  for (const m of msgs) {
-    if (!seen.has(m.from.email)) {
-      seen.add(m.from.email);
-      senders.push(m.from);
+/** Recompute the materialized row for one thread, or delete it when empty. */
+function buildThreadRow(accountId: string, me: string, threadId: string): Promise<ThreadPersistRow | null> {
+  return (async () => {
+    const all = await threadMetas(accountId, threadId);
+    const msgs = all.filter((m) => !m.folders.includes("DRAFT"));
+    if (!msgs.length) return null;
+    const last = msgs[msgs.length - 1];
+    const lastFromMe = isFromMe(last, me);
+    const others = msgs.filter((m) => !isFromMe(m, me));
+    const lastOther = others[others.length - 1] ?? null;
+    const anyMine = msgs.some((m) => isFromMe(m, me));
+    const toMeDirect = lastOther
+      ? lastOther.to.some((p) => p.email === me) || (lastOther.to.length === 0 && lastOther.cc.length === 0)
+      : false;
+    const isBulk = !anyMine && !!lastOther && messageIsBulk(lastOther);
+    const senders: Person[] = [];
+    const seen = new Set<string>();
+    for (const m of msgs) {
+      if (!seen.has(m.from.email)) {
+        seen.add(m.from.email);
+        senders.push(m.from);
+      }
     }
-  }
-  const audience = new Set<string>();
-  for (const m of msgs) for (const p of [m.from, ...m.to, ...m.cc]) audience.add(p.email);
-  const folders = new Set<string>();
-  for (const m of msgs) for (const f of m.folders) folders.add(f);
-  const inInbox = msgs.some((m) => m.folders.includes("INBOX"));
-  await persist().putThreads([{
-    account_id: accountId,
-    id: threadId,
-    subject: normalizeSubject(msgs[0].subject || last.subject),
-    snippet: last.snippet,
-    participants: JSON.stringify(senders.slice(0, 40)),
-    last_from_name: last.from.name,
-    last_from_email: last.from.email,
-    last_from_me: lastFromMe ? 1 : 0,
-    last_date_ms: Date.parse(last.date),
-    first_date_ms: Date.parse(msgs[0].date),
-    message_count: msgs.length,
-    unread_count: msgs.filter((m) => m.unread).length,
-    starred: msgs.some((m) => m.starred) ? 1 : 0,
-    has_att: msgs.some((m) => m.hasAttachments) ? 1 : 0,
-    folders: foldersToStr([...folders]),
-    in_inbox: inInbox ? 1 : 0,
-    to_me_direct: toMeDirect ? 1 : 0,
-    is_bulk: isBulk ? 1 : 0,
-    audience: audience.size,
-  }]);
-  if (!lastFromMe) {
-    const state = await persist().getThreadState(accountId, threadId);
-    if (state && (state.nudged === 1 || state.remind_at !== null) && (state.remind_set_at ?? 0) < Date.parse(last.date)) {
-      await persist().patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
+    const audience = new Set<string>();
+    for (const m of msgs) for (const p of [m.from, ...m.to, ...m.cc]) audience.add(p.email);
+    const folders = new Set<string>();
+    for (const m of msgs) for (const f of m.folders) folders.add(f);
+    const inInbox = msgs.some((m) => m.folders.includes("INBOX"));
+    if (!lastFromMe) {
+      const state = await persist().getThreadState(accountId, threadId);
+      if (state && (state.nudged === 1 || state.remind_at !== null) && (state.remind_set_at ?? 0) < Date.parse(last.date)) {
+        await persist().patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
+      }
     }
-  }
+    return {
+      account_id: accountId,
+      id: threadId,
+      subject: normalizeSubject(msgs[0].subject || last.subject),
+      snippet: last.snippet,
+      participants: JSON.stringify(senders.slice(0, 40)),
+      last_from_name: last.from.name,
+      last_from_email: last.from.email,
+      last_from_me: lastFromMe ? 1 : 0,
+      last_date_ms: Date.parse(last.date),
+      first_date_ms: Date.parse(msgs[0].date),
+      message_count: msgs.length,
+      unread_count: msgs.filter((m) => m.unread).length,
+      starred: msgs.some((m) => m.starred) ? 1 : 0,
+      has_att: msgs.some((m) => m.hasAttachments) ? 1 : 0,
+      folders: foldersToStr([...folders]),
+      in_inbox: inInbox ? 1 : 0,
+      to_me_direct: toMeDirect ? 1 : 0,
+      is_bulk: isBulk ? 1 : 0,
+      audience: audience.size,
+    };
+  })();
+}
+
+/** Recompute many threads in one pass: parallel reads, one batched write. */
+export async function rebuildThreads(accountId: string, me: string, threadIds: string[]): Promise<void> {
+  if (!threadIds.length) return;
+  const rows = await Promise.all(
+    threadIds.map(async (t) => {
+      const row = await buildThreadRow(accountId, me, t);
+      if (!row) await persist().deleteThread(accountId, t);
+      return row;
+    }),
+  );
+  const keep = rows.filter((r): r is ThreadPersistRow => !!r);
+  if (keep.length) await persist().putThreads(keep);
 }
 
 const WAITING_WINDOW_MS = 30 * 24 * 3600 * 1000;
@@ -360,12 +374,14 @@ export async function getBrief(accountId: string, threadId: string): Promise<str
   return row?.brief ?? null;
 }
 
+/** Apply a transformation to every message of the given threads and persist
+ *  the result in one batched pass, so an action costs a handful of store
+ *  round trips no matter how many threads it touches. */
 export async function applyLocal(accountId: string, me: string, threadIds: string[], fn: (m: MessageMeta) => MessageMeta | null): Promise<void> {
-  for (const t of threadIds) {
-    const metas = await threadMetas(accountId, t);
-    const changed = metas.map(fn).filter((m): m is MessageMeta => !!m);
-    await upsertMessages(accountId, me, changed);
-  }
+  if (!threadIds.length) return;
+  const metasPerThread = await Promise.all(threadIds.map((t) => threadMetas(accountId, t)));
+  const changed = metasPerThread.flatMap((metas) => metas.map(fn).filter((m): m is MessageMeta => !!m));
+  if (changed.length) await upsertMessages(accountId, me, changed);
 }
 
 export async function localSearch(accountId: string, q: string, limit = 50): Promise<ThreadSummary[]> {
