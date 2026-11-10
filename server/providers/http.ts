@@ -17,11 +17,56 @@ export class ApiError extends Error {
   status: number;
   body: string;
   constructor(status: number, body: string, url: string) {
-    super(`HTTP ${status} from ${new URL(url).host}: ${body.slice(0, 300)}`);
+    super(describeHttpError(status, body, url));
     this.name = "ApiError";
     this.status = status;
     this.body = body;
   }
+}
+
+function googleErrorInfo(body: string): { message: string; reasons: string } | null {
+  try {
+    const err = JSON.parse(body).error;
+    if (!err || typeof err !== "object") return null;
+    const listed = Array.isArray(err.errors) ? err.errors.map((e: { reason?: string }) => e.reason) : [];
+    const reasons = [err.status, ...listed].filter(Boolean).join(" ");
+    return { message: typeof err.message === "string" ? err.message : "", reasons };
+  } catch {
+    return null;
+  }
+}
+
+/** 429, and Gmail's 403 quota / per-user rate-limit responses. */
+export function isQuotaOrRateLimit(status: number, body: string): boolean {
+  if (status === 429) return true;
+  if (status !== 403) return false;
+  const info = googleErrorInfo(body);
+  return /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|dailyLimitExceeded|RESOURCE_EXHAUSTED|Quota exceeded/i.test(
+    `${info?.message ?? ""} ${info?.reasons ?? ""} ${body}`,
+  );
+}
+
+function providerLabel(url: string): string {
+  const host = new URL(url).host;
+  if (host.includes("gmail")) return "Gmail";
+  if (host.includes("microsoft") || host.includes("graph.microsoft")) return "Outlook";
+  return "The mail provider";
+}
+
+function describeHttpError(status: number, body: string, url: string): string {
+  if (isQuotaOrRateLimit(status, body)) {
+    return `${providerLabel(url)} asked us to slow down. Wait a minute, then retry.`;
+  }
+  const info = googleErrorInfo(body);
+  if (info?.message && info.message.length <= 180) return info.message;
+  return `Request to ${new URL(url).host} failed (HTTP ${status}).`;
+}
+
+function rateLimitWaitMs(status: number, body: string, res: Response, attempt: number): number {
+  const wait = retryAfterMs(res, attempt);
+  // Gmail "Units per minute per user" needs a full minute, not the default exponential backoff.
+  if (status === 403 && /per minute|Total Query Cost/i.test(body)) return Math.max(wait, 60_000);
+  return wait;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -79,12 +124,15 @@ export async function apiFetch<T = unknown>(tokens: TokenSource, url: string, re
       await sleep(wait);
       continue;
     }
-    // Gmail signals per-user rate limits as 403 with reason rateLimitExceeded / userRateLimitExceeded.
     if (res.status === 403) {
       const text = await res.text();
-      if (/rateLimitExceeded|userRateLimitExceeded/.test(text) && attempt < maxRetries) {
-        await sleep(retryAfterMs(res, attempt));
-        continue;
+      if (isQuotaOrRateLimit(403, text)) {
+        const wait = rateLimitWaitMs(403, text, res, attempt);
+        if (attempt < maxRetries) {
+          await sleep(wait);
+          continue;
+        }
+        throw new RateLimitedError(wait);
       }
       throw new ApiError(res.status, text, url);
     }

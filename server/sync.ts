@@ -23,7 +23,7 @@ function rt(accountId: string): Runtime {
 
 function describe(err: unknown): string {
   if (err instanceof AuthExpiredError) return err.message;
-  if (err instanceof RateLimitedError) return "The mail provider is rate limiting requests. Sync resumes automatically.";
+  if (err instanceof RateLimitedError) return "The mail provider asked us to slow down. Sync will retry shortly.";
   return err instanceof Error ? err.message : String(err);
 }
 

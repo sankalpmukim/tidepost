@@ -167,7 +167,7 @@ export function ThreadList() {
       {sync && (sync.phase === "initial" || sync.phase === "error") ? (
         <div className={`sync-banner${sync.phase === "error" ? " error" : ""}`} role="status">
           {sync.phase === "initial" ? <span className="spinner" /> : null}
-          <span style={{ flex: 1 }}>
+          <span className="sync-banner-msg">
             {sync.phase === "initial"
               ? `Indexing your mailbox: ${sync.done.toLocaleString()} of ${sync.total.toLocaleString()} messages. You can start working now.`
               : sync.error}
