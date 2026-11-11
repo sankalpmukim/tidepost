@@ -218,10 +218,31 @@ export function Reader() {
     return (
       <section className="reader-pane" aria-busy="true">
         <div className="reader-bar" />
-        <div className="reader-inner">
-          <div className="skeleton" style={{ height: 20, width: "60%" }} />
-          <div className="skeleton" style={{ width: "30%" }} />
-          {q.isError ? <p style={{ color: "var(--danger-text)" }}>{(q.error as Error).message}</p> : null}
+        <div className="reader-scroll">
+          <div className="reader-inner">
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+              <div className="skeleton" style={{ height: 24, width: "70%" }} />
+              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+                <div className="skeleton" style={{ height: 14, width: 120 }} />
+                <div className="skeleton" style={{ height: 14, width: 80 }} />
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", marginTop: "var(--space-6)" }}>
+              <div style={{ display: "flex", gap: "var(--space-3)" }}>
+                <div className="skeleton" style={{ height: 40, width: 40, borderRadius: "50%" }} />
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+                  <div className="skeleton" style={{ height: 16, width: "40%" }} />
+                  <div className="skeleton" style={{ height: 14, width: "60%" }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)", marginLeft: 52 }}>
+                <div className="skeleton" style={{ height: 14, width: "90%" }} />
+                <div className="skeleton" style={{ height: 14, width: "85%" }} />
+                <div className="skeleton" style={{ height: 14, width: "75%" }} />
+              </div>
+            </div>
+            {q.isError ? <p style={{ color: "var(--danger-text)", marginTop: "var(--space-4)" }}>{(q.error as Error).message}</p> : null}
+          </div>
         </div>
       </section>
     );
