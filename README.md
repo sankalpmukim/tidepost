@@ -85,33 +85,28 @@ Each thread shows a status glyph whose shape carries the meaning, so it doesn't 
 
 ## Running it
 
-Requires Node.js 22.12 or newer. Durable data lives in [Convex](https://www.convex.dev) (users, sessions, the message index, send queue). Tests use an in-memory store.
+Requires Node.js 22.12 or newer. Tidepost runs as a single [Cloudflare Worker](https://workers.cloudflare.com/) deployment: the API and client ship together, users/sessions/accounts live in [D1](https://developers.cloudflare.com/d1/), and each connected mailbox's index lives in its own Durable Object with SQLite storage. Tests run against in-memory stores.
 
 ```sh
 npm install
-cp .env.example .env     # add your OAuth credentials (see below)
-npx convex dev --once    # creates a free Convex project and writes CONVEX_URL
-npm run dev              # Convex + API on :8787 + web app on http://localhost:5173
-```
-
-Set `TIDEPOST_SECRET` in `.env` (and in Vercel) so OAuth tokens stay decryptable across deploys. Copy `CONVEX_URL` from `.env.local` into Vercel env, and set the same secret on the Convex deployment as `TIDEPOST_SERVER_SECRET`:
-
-```sh
-npx convex env set TIDEPOST_SERVER_SECRET "$TIDEPOST_SECRET"
-vercel env add TIDEPOST_SECRET
-vercel env add CONVEX_URL
+cp .env.example .dev.vars      # add your OAuth credentials (see below)
+npm run db:create              # once: prints the D1 database_id to put in wrangler.jsonc
+npm run db:migrate:local       # create the local schema
+npm run dev                    # wrangler dev (API on :8787) + web app on http://localhost:5173
 ```
 
 Open http://localhost:5173. Without credentials you can still choose **Try a demo mailbox**, which loads 2,500 realistic messages, including a 140-message reply-all thread.
 
-Production:
+Deploying:
 
 ```sh
-npm run build
-APP_URL=https://mail.example.com npm start   # serves the built app and the API on $PORT
+npx wrangler secret put TIDEPOST_SECRET     # required: encrypts OAuth tokens at rest
+npx wrangler secret put GOOGLE_CLIENT_ID    # and GOOGLE_CLIENT_SECRET, MICROSOFT_*, ANTHROPIC_API_KEY
+npm run db:migrate:remote
+npm run deploy                               # builds the client, deploys Worker + assets + DOs
 ```
 
-Put it behind HTTPS. Session cookies are marked `Secure` when `APP_URL` starts with `https://`.
+Set `APP_URL` in `wrangler.jsonc` to your public URL (OAuth redirect URIs are built from it). Session cookies are marked `Secure` when `APP_URL` starts with `https://`. Architecture notes: [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md).
 
 ### Gmail setup
 
@@ -121,7 +116,7 @@ Put it behind HTTPS. Session cookies are marked `Secure` when `APP_URL` starts w
    - Gmail scopes are *restricted*. Making the app public requires Google's verification.
 3. Create credentials: **OAuth client ID**, type **Web application**.
    - Authorized redirect URI: `http://localhost:5173/api/auth/google/callback` (or `${APP_URL}/api/auth/google/callback`).
-4. Put the client ID and secret in `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+4. Put the client ID and secret in `.dev.vars` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 ### Outlook / Microsoft 365 setup
 
@@ -131,7 +126,7 @@ Put it behind HTTPS. Session cookies are marked `Secure` when `APP_URL` starts w
 4. Under **Certificates & secrets**, create a client secret.
 5. Under **API permissions**, add these Microsoft Graph *delegated* permissions: `openid`, `profile`, `email`, `offline_access`, `User.Read`, `Mail.ReadWrite`, `Mail.Send`.
    - Some organizations require admin consent for mail scopes.
-6. Put the values in `.env` as `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`. Leave `MICROSOFT_TENANT=common`, or set it to your tenant ID to restrict sign-in to one organization.
+6. Put the values in `.dev.vars` as `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`. Leave `MICROSOFT_TENANT=common`, or set it to your tenant ID to restrict sign-in to one organization.
 
 ### Assistant (optional)
 
@@ -143,43 +138,51 @@ Set `ANTHROPIC_API_KEY` to turn on Claude-written briefs, drafts and plans. The 
 ## How it works
 
 ```
-browser (React, Vite)                      server (Node, Hono)                         providers
-──────────────────────                     ─────────────────────────────────           ───────────────────
+browser (React, Vite)                      Cloudflare Worker (Hono)                    providers
+──────────────────────                     ─────────────────────────────               ──────────────
 lists, reader, composer  ── /api ────────▶ routes, sessions, CSRF header check
-live updates             ◀── SSE ──────── event bus (threads, sync, runs, sends)
-                                           sync engine ── initial index + polling ───▶ Gmail API (history)
-                                           Convex: message index, threads, lanes,      Microsoft Graph (delta)
-                                                   capped body cache, send queue,          demo mailbox (in memory)
-                                                   snoozes, reminders
-                                           assistant ─────────────────────────────────▶ Anthropic API (optional)
+live updates             ◀── SSE ──────── Hub Durable Object (per user)
+                                            │ events
+                                            ▼
+                                            Mailbox Durable Object (per account)
+                                            sync engine ── initial index + polling ──▶ Gmail API (history)
+                                            SQLite: message index, threads, lanes,      Microsoft Graph (delta)
+                                                    capped body cache, send queue,
+                                                    snoozes, reminders (one alarm drives all timers)
+                                            D1: users, sessions, accounts (encrypted tokens)
+                                            assistant ─────────────────────────────────▶ Anthropic API (optional)
 ```
 
-- **Index first.** On sign-in the server indexes the newest 800 messages' headers (`TIDEPOST_SYNC_MESSAGES`; raise it only if you have Convex headroom). After that it polls for changes every 45 seconds, using Gmail `history` or Graph delta queries. Lists, lanes and counts run over that Convex index.
-- **Bodies on demand.** Bodies are fetched when you open a thread and a small recent cache is kept in Convex (not the whole mailbox) so the free tier stays comfortable.
+- **Index first.** On sign-in the Mailbox Durable Object indexes the newest 800 messages' headers (`TIDEPOST_SYNC_MESSAGES`). After that it wakes on an alarm every 45 seconds, using Gmail `history` or Graph delta queries. Lists, lanes and counts run over that local SQLite index.
+- **Bodies on demand.** Bodies are fetched when you open a thread and a small recent cache is kept (not the whole mailbox).
 - **Optimistic actions.** Archive, read, star and the rest update the local index right away and then call the provider. A failure triggers a resync.
+- **Durable timers.** The undo-send queue, snoozes and follow-up reminders are Durable Object alarms, so they survive restarts and fire exactly on time.
 - **Outlook specifics.** Outlook threads are grouped by `conversationId`. Requests use immutable IDs, so messages keep their identity when moved between folders.
-- **Encryption.** OAuth tokens and queued outgoing mail are encrypted at rest with AES-256-GCM.
+- **Encryption.** OAuth tokens and queued outgoing mail are encrypted at rest with AES-256-GCM (key derived from `TIDEPOST_SECRET`).
 
 ## Development
 
 ```sh
-npm run dev         # API + web with reload
-npm test            # unit tests (providers, index, lanes, MIME, diff, checks)
-npm run typecheck
+npm run dev         # API (wrangler dev, local D1 + Durable Objects) + web with reload
+npm test            # unit tests (providers, index, lanes, MIME, diff, checks, full HTTP flow)
+npm run typecheck   # both tsconfigs (app + worker)
 npm run verify      # builds, then runs 23 end-to-end checks in headless Chromium against the demo mailbox
 ```
 
 ```
+worker/index.ts      entry: API Worker, cron, DO class exports
 server/
-  index.ts           entry; serves dist/ in production
   app.ts             HTTP API, OAuth callbacks, SSE
   accounts.ts        users, sessions, encrypted tokens, provider registry
-  sync.ts            initial sync, polling, snooze/reminder scheduler
+  authstore.ts       D1-backed users/sessions/accounts
+  hubcore.ts         SSE fan-out + run registry (per-user hub logic)
   store.ts           message index, thread materialization, triage lanes, search
-  persist.ts         Convex or in-memory storage
-convex/              Convex schema and server functions
-  mail.ts            thread loading, actions, undo-send queue, unsubscribe, sweeps
-  assistant.ts       briefs, drafts, plans (Claude or heuristics)
+  mailbox/
+    engine.ts        sync engine, actions, undo-send queue, unsubscribe, sweeps, runs
+    do.ts            the per-account Durable Object (RPC surface)
+    sqlite.ts        MailboxPersist over the DO's SQLite storage
+    client.ts        DO RPC + in-process clients behind one seam (tests use the latter)
+    rpc.ts           error envelope that survives the DO boundary
   providers/         gmail.ts, outlook.ts, demo/, shared HTTP + address helpers
   auth/              Google and Microsoft OAuth (authorization code + PKCE)
   mime.ts            RFC 5322 message builder

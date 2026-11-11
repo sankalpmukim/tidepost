@@ -45,7 +45,7 @@ export const api = {
 
   folders: (aid: string) => get<Folder[]>(`/accounts/${aid}/folders`),
   counts: (aid: string) => get<LaneCounts>(`/accounts/${aid}/counts`),
-  threads: (aid: string, view: string, cursor: string | null) => get<ThreadPage>(`/accounts/${aid}/threads?view=${enc(view)}&limit=100${cursor ? `&cursor=${cursor}` : ""}`),
+  threads: (aid: string, view: string, cursor: string | null) => get<ThreadPage>(`/accounts/${aid}/threads?view=${enc(view)}&limit=200${cursor ? `&cursor=${cursor}` : ""}`),
   thread: (aid: string, tid: string, refresh = true) => get<Thread>(`/accounts/${aid}/threads/${enc(tid)}${refresh ? "" : "?refresh=0"}`),
   messages: (aid: string, ids: string[]) => post<Message[]>(`/accounts/${aid}/messages`, { ids }),
   action: (aid: string, threadIds: string[], action: ThreadAction) => post<{ threads?: ThreadSummary[]; run?: Run }>(`/accounts/${aid}/actions`, { threadIds, action }),

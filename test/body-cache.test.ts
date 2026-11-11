@@ -2,16 +2,9 @@
 // on write, never sliced mid-string, and corrupt cached rows must self-heal
 // instead of throwing "Unterminated string in JSON at position 40000".
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { createHarness, initTestConfig } from "./harness";
 
-process.env.TIDEPOST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "tidepost-body-"));
-process.env.TIDEPOST_SECRET = "body-secret";
-process.env.GOOGLE_CLIENT_ID = "cid.apps.googleusercontent.com";
-process.env.GOOGLE_CLIENT_SECRET = "csecret";
-process.env.APP_URL = "http://localhost:5173";
-process.env.TIDEPOST_POLL_SECONDS = "3600";
+initTestConfig();
 
 const ME = "alex@northwind.example";
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
@@ -44,6 +37,10 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+const h = createHarness();
+let cookie = "";
+let accountId = "";
+
 beforeAll(() => {
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -65,28 +62,21 @@ beforeAll(() => {
 });
 
 describe("oversized body clamping", () => {
-  let cookie = "";
-  let accountId = "";
-
   beforeAll(async () => {
-    const { app } = await import("../server/app");
-    const start = await app.request("/api/auth/google/start");
+    const start = await h.app.request("/api/auth/google/start");
     const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
     const oauthCookie = start.headers.get("set-cookie")!.split(";")[0];
-    const cb = await app.request(`/api/auth/google/callback?code=authcode&state=${state}`, { headers: { cookie: oauthCookie } });
+    const cb = await h.app.request(`/api/auth/google/callback?code=authcode&state=${state}`, { headers: { cookie: oauthCookie } });
     accountId = decodeURIComponent(cb.headers.get("location")!.split("account=")[1]);
     cookie = cb.headers.getSetCookie().find((c) => c.startsWith("tp_session="))!.split(";")[0];
-    const { syncNow } = await import("../server/sync");
-    await syncNow(accountId);
+    await h.mailboxes.mailbox(accountId).syncNow();
   });
 
   it("stores a parseable body within the cap and serves the thread", async () => {
-    const { app } = await import("../server/app");
-    const { persist } = await import("../server/persist");
     const { BODY_JSON_MAX } = await import("../server/limits");
-    const res = await app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
+    const res = await h.app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
     expect(res.status).toBe(200);
-    const stored = await persist().getBody(accountId, "msg1");
+    const stored = await h.mailPersist.getBody(accountId, "msg1");
     expect(stored).not.toBeNull();
     expect(stored!.length).toBeLessThanOrEqual(BODY_JSON_MAX);
     const parsed = JSON.parse(stored!) as { html: string | null; text: string };
@@ -95,22 +85,19 @@ describe("oversized body clamping", () => {
   });
 
   it("serves the thread again from cache", async () => {
-    const { app } = await import("../server/app");
-    const res = await app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
+    const res = await h.app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
     expect(res.status).toBe(200);
   });
 
   it("self-heals a cached row truncated mid-string by the old slice", async () => {
-    const { app } = await import("../server/app");
-    const { persist } = await import("../server/persist");
-    const good = (await persist().getBody(accountId, "msg1"))!;
+    const good = (await h.mailPersist.getBody(accountId, "msg1"))!;
     expect(good.length).toBeGreaterThan(10_000); // big enough for the slice to land mid-string
     const corrupt = good.slice(0, good.length - 100); // the legacy mid-string truncation
     expect(() => JSON.parse(corrupt)).toThrow();
-    await persist().putBody(accountId, "msg1", corrupt);
-    const res = await app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
+    await h.mailPersist.putBody(accountId, "msg1", corrupt);
+    const res = await h.app.request(`/api/accounts/${accountId}/threads/thr1`, { headers: { cookie } });
     expect(res.status).toBe(200);
-    const healed = await persist().getBody(accountId, "msg1");
+    const healed = await h.mailPersist.getBody(accountId, "msg1");
     expect(() => JSON.parse(healed!)).not.toThrow();
   });
 });

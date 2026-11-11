@@ -1,5 +1,7 @@
 // Local index: message upserts, materialized threads, triage lanes, queries.
-import { persist, type MessagePersistRow, type ThreadPersistRow, type ThreadStateRow } from "./persist";
+// Runs inside the Mailbox Durable Object (production) or against the memory
+// store (tests). Every function takes its MailboxPersist explicitly.
+import type { MailboxPersist, MessagePersistRow, ThreadPersistRow, ThreadStateRow } from "./persist";
 import { MAX_SEARCH_SCAN } from "./limits";
 import type { MessageMeta, BulkSignals } from "./providers/types";
 import type { Lane, LaneCounts, Person, ThreadPage, ThreadSummary, Contact } from "../shared/types";
@@ -8,7 +10,7 @@ const BULK_CATEGORIES = new Set(["promotions", "social", "updates", "forums", "o
 const ROBOT_SENDER = /^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|newsletters?|news|updates?|alerts?|digest|info|marketing|hello|team|support|billing|receipts?|calendar-notification|jira|github|builds?|ci)([+.-][^@]*)?@/i;
 
 type MessageRow = MessagePersistRow;
-type ThreadRow = ThreadPersistRow & Partial<ThreadStateRow>;
+export type ThreadRow = ThreadPersistRow & Partial<ThreadStateRow>;
 
 const foldersToStr = (f: string[]) => `,${[...new Set(f)].join(",")},`;
 export const foldersFromStr = (s: string) => s.split(",").filter(Boolean);
@@ -42,7 +44,7 @@ export function rowToMeta(r: MessageRow): MessageMeta {
 const peopleText = (m: MessageMeta) =>
   [m.from, ...m.to, ...m.cc].map((p) => `${p.name} ${p.email}`).join(" ");
 
-function metaToRow(accountId: string, m: MessageMeta): MessageRow {
+export function metaToRow(accountId: string, m: MessageMeta): MessageRow {
   return {
     account_id: accountId,
     id: m.id,
@@ -72,33 +74,33 @@ function metaToRow(accountId: string, m: MessageMeta): MessageRow {
 }
 
 /** Insert or update messages, then rebuild the affected threads. Returns affected thread ids. */
-export async function upsertMessages(accountId: string, me: string, metas: MessageMeta[]): Promise<string[]> {
+export async function upsertMessages(p: MailboxPersist, accountId: string, me: string, metas: MessageMeta[]): Promise<string[]> {
   if (!metas.length) return [];
   const threads = new Set<string>();
-  const prev = await persist().putMessages(metas.map((m) => metaToRow(accountId, m)));
-  for (const p of prev) threads.add(p.thread_id);
+  const prev = await p.putMessages(metas.map((m) => metaToRow(accountId, m)));
+  for (const t of prev) threads.add(t.thread_id);
   for (const m of metas) threads.add(m.threadId);
-  await rebuildThreads(accountId, me, [...threads]);
-  await persist().pruneOldestMessages(accountId);
+  await rebuildThreads(p, accountId, me, [...threads]);
+  await p.pruneOldestMessages(accountId);
   return [...threads];
 }
 
-export async function deleteMessages(accountId: string, me: string, ids: string[]): Promise<string[]> {
+export async function deleteMessages(p: MailboxPersist, accountId: string, me: string, ids: string[]): Promise<string[]> {
   if (!ids.length) return [];
-  const prev = await persist().deleteMessages(accountId, ids);
-  const threads = new Set(prev.map((p) => p.thread_id));
-  await rebuildThreads(accountId, me, [...threads]);
+  const prev = await p.deleteMessages(accountId, ids);
+  const threads = new Set(prev.map((t) => t.thread_id));
+  await rebuildThreads(p, accountId, me, [...threads]);
   return [...threads];
 }
 
 /** Store the body text in the search index once a body has been fetched. */
-export async function indexBody(accountId: string, messageId: string, text: string): Promise<void> {
-  const row = await persist().getMessage(accountId, messageId);
+export async function indexBody(p: MailboxPersist, accountId: string, messageId: string, text: string): Promise<void> {
+  const row = await p.getMessage(accountId, messageId);
   if (!row) return;
   const people = [{ name: row.from_name, email: row.from_email }, ...(JSON.parse(row.to_json) as Person[]), ...(JSON.parse(row.cc_json) as Person[])]
-    .map((p) => `${p.name} ${p.email}`)
+    .map((person) => `${person.name} ${person.email}`)
     .join(" ");
-  await persist().touchSearchText(accountId, messageId, `${row.subject} ${people} ${text.slice(0, 4000)}`.toLowerCase());
+  await p.touchSearchText(accountId, messageId, `${row.subject} ${people} ${text.slice(0, 4000)}`.toLowerCase());
 }
 
 export function isRobot(email: string): boolean {
@@ -128,15 +130,15 @@ function isFromMe(m: MessageMeta, me: string): boolean {
   return m.from.email === me || m.folders.includes("SENT");
 }
 
-export async function threadMetas(accountId: string, threadId: string): Promise<MessageMeta[]> {
-  const rows = await persist().messagesForThread(accountId, threadId);
+export async function threadMetas(p: MailboxPersist, accountId: string, threadId: string): Promise<MessageMeta[]> {
+  const rows = await p.messagesForThread(accountId, threadId);
   return rows.map(rowToMeta);
 }
 
 /** Recompute the materialized row for one thread, or delete it when empty. */
-function buildThreadRow(accountId: string, me: string, threadId: string): Promise<ThreadPersistRow | null> {
+function buildThreadRow(p: MailboxPersist, accountId: string, me: string, threadId: string): Promise<ThreadPersistRow | null> {
   return (async () => {
-    const all = await threadMetas(accountId, threadId);
+    const all = await threadMetas(p, accountId, threadId);
     const msgs = all.filter((m) => !m.folders.includes("DRAFT"));
     if (!msgs.length) return null;
     const last = msgs[msgs.length - 1];
@@ -145,7 +147,7 @@ function buildThreadRow(accountId: string, me: string, threadId: string): Promis
     const lastOther = others[others.length - 1] ?? null;
     const anyMine = msgs.some((m) => isFromMe(m, me));
     const toMeDirect = lastOther
-      ? lastOther.to.some((p) => p.email === me) || (lastOther.to.length === 0 && lastOther.cc.length === 0)
+      ? lastOther.to.some((person) => person.email === me) || (lastOther.to.length === 0 && lastOther.cc.length === 0)
       : false;
     const isBulk = !anyMine && !!lastOther && messageIsBulk(lastOther);
     const senders: Person[] = [];
@@ -157,14 +159,14 @@ function buildThreadRow(accountId: string, me: string, threadId: string): Promis
       }
     }
     const audience = new Set<string>();
-    for (const m of msgs) for (const p of [m.from, ...m.to, ...m.cc]) audience.add(p.email);
+    for (const m of msgs) for (const person of [m.from, ...m.to, ...m.cc]) audience.add(person.email);
     const folders = new Set<string>();
     for (const m of msgs) for (const f of m.folders) folders.add(f);
     const inInbox = msgs.some((m) => m.folders.includes("INBOX"));
     if (!lastFromMe) {
-      const state = await persist().getThreadState(accountId, threadId);
+      const state = await p.getThreadState(accountId, threadId);
       if (state && (state.nudged === 1 || state.remind_at !== null) && (state.remind_set_at ?? 0) < Date.parse(last.date)) {
-        await persist().patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
+        await p.patchThreadState(accountId, threadId, { nudged: 0, remind_at: null });
       }
     }
     return {
@@ -192,17 +194,17 @@ function buildThreadRow(accountId: string, me: string, threadId: string): Promis
 }
 
 /** Recompute many threads in one pass: parallel reads, one batched write. */
-export async function rebuildThreads(accountId: string, me: string, threadIds: string[]): Promise<void> {
+export async function rebuildThreads(p: MailboxPersist, accountId: string, me: string, threadIds: string[]): Promise<void> {
   if (!threadIds.length) return;
   const rows = await Promise.all(
     threadIds.map(async (t) => {
-      const row = await buildThreadRow(accountId, me, t);
-      if (!row) await persist().deleteThread(accountId, t);
+      const row = await buildThreadRow(p, accountId, me, t);
+      if (!row) await p.deleteThread(accountId, t);
       return row;
     }),
   );
   const keep = rows.filter((r): r is ThreadPersistRow => !!r);
-  if (keep.length) await persist().putThreads(keep);
+  if (keep.length) await p.putThreads(keep);
 }
 
 const WAITING_WINDOW_MS = 30 * 24 * 3600 * 1000;
@@ -285,7 +287,7 @@ export function matchesView(r: ThreadRow, view: string, now: number): boolean {
   }
 }
 
-function sortThreads(view: string, a: ThreadRow, b: ThreadRow): number {
+export function sortThreads(view: string, a: ThreadRow, b: ThreadRow): number {
   if (view === "snoozed") return (a.snoozed_until ?? 0) - (b.snoozed_until ?? 0);
   if (view === "waiting") return a.last_date_ms - b.last_date_ms;
   const pin = (b.pinned ?? 0) - (a.pinned ?? 0);
@@ -293,15 +295,15 @@ function sortThreads(view: string, a: ThreadRow, b: ThreadRow): number {
   return b.last_date_ms - a.last_date_ms;
 }
 
-async function joinedThreads(accountId: string): Promise<ThreadRow[]> {
-  const [threads, states] = await Promise.all([persist().listThreads(accountId), persist().listThreadStates(accountId)]);
+export async function joinedThreads(p: MailboxPersist, accountId: string): Promise<ThreadRow[]> {
+  const [threads, states] = await Promise.all([p.listThreads(accountId), p.listThreadStates(accountId)]);
   const map = new Map(states.map((s) => [`${s.account_id}:${s.thread_id}`, s]));
   return threads.map((t) => join(t, map.get(`${t.account_id}:${t.id}`)));
 }
 
-export async function listThreads(accountId: string, view: string, offset: number, limit: number): Promise<ThreadPage> {
+export async function listThreads(p: MailboxPersist, accountId: string, view: string, offset: number, limit: number): Promise<ThreadPage> {
   const now = Date.now();
-  const rows = (await joinedThreads(accountId)).filter((r) => matchesView(r, view, now)).sort((a, b) => sortThreads(view, a, b));
+  const rows = (await joinedThreads(p, accountId)).filter((r) => matchesView(r, view, now)).sort((a, b) => sortThreads(view, a, b));
   const page = rows.slice(offset, offset + limit);
   return {
     threads: page.map((r) => rowToSummary(r, now)),
@@ -310,25 +312,25 @@ export async function listThreads(accountId: string, view: string, offset: numbe
   };
 }
 
-export async function getThreadSummary(accountId: string, threadId: string): Promise<ThreadSummary | null> {
-  const t = await persist().getThread(accountId, threadId);
+export async function getThreadSummary(p: MailboxPersist, accountId: string, threadId: string): Promise<ThreadSummary | null> {
+  const t = await p.getThread(accountId, threadId);
   if (!t) return null;
-  const s = await persist().getThreadState(accountId, threadId);
+  const s = await p.getThreadState(accountId, threadId);
   return rowToSummary(join(t, s ?? undefined));
 }
 
-export async function summariesFor(accountId: string, threadIds: string[]): Promise<ThreadSummary[]> {
+export async function summariesFor(p: MailboxPersist, accountId: string, threadIds: string[]): Promise<ThreadSummary[]> {
   const out: ThreadSummary[] = [];
   for (const id of threadIds) {
-    const s = await getThreadSummary(accountId, id);
+    const s = await getThreadSummary(p, accountId, id);
     if (s) out.push(s);
   }
   return out;
 }
 
-export async function laneCounts(accountId: string): Promise<LaneCounts> {
+export async function laneCounts(p: MailboxPersist, accountId: string): Promise<LaneCounts> {
   const now = Date.now();
-  const rows = await joinedThreads(accountId);
+  const rows = await joinedThreads(p, accountId);
   const count = (view: string, extra?: (r: ThreadRow) => boolean) =>
     rows.filter((r) => matchesView(r, view, now) && (!extra || extra(r))).length;
   return {
@@ -342,12 +344,13 @@ export async function laneCounts(accountId: string): Promise<LaneCounts> {
 }
 
 export async function sweepCandidates(
+  p: MailboxPersist,
   accountId: string,
   view: string,
   extra: (r: ThreadRow) => boolean,
 ): Promise<{ id: string; subject: string; last_from_name: string }[]> {
   const now = Date.now();
-  return (await joinedThreads(accountId))
+  return (await joinedThreads(p, accountId))
     .filter((r) => matchesView(r, view, now) && extra(r))
     .sort((a, b) => b.last_date_ms - a.last_date_ms)
     .slice(0, 2000)
@@ -355,71 +358,71 @@ export async function sweepCandidates(
 }
 
 /** Message ids of a thread, optionally only those in a folder. */
-export async function threadMessageIds(accountId: string, threadId: string, folder?: string): Promise<string[]> {
-  const rows = await persist().messagesForThread(accountId, threadId);
+export async function threadMessageIds(p: MailboxPersist, accountId: string, threadId: string, folder?: string): Promise<string[]> {
+  const rows = await p.messagesForThread(accountId, threadId);
   return rows.filter((r) => !folder || r.folders.includes(`,${folder},`)).map((r) => r.id);
 }
 
-export async function getMeta(accountId: string, messageId: string): Promise<MessageMeta | null> {
-  const row = await persist().getMessage(accountId, messageId);
+export async function getMeta(p: MailboxPersist, accountId: string, messageId: string): Promise<MessageMeta | null> {
+  const row = await p.getMessage(accountId, messageId);
   return row ? rowToMeta(row) : null;
 }
 
-export async function setThreadState(accountId: string, threadId: string, patch: Partial<{ pinned: number; snoozed_until: number | null; remind_at: number | null; remind_set_at: number | null; nudged: number; waiting_dismissed_at: number | null; brief: string | null }>): Promise<void> {
-  await persist().patchThreadState(accountId, threadId, patch);
+export async function setThreadState(p: MailboxPersist, accountId: string, threadId: string, patch: Partial<{ pinned: number; snoozed_until: number | null; remind_at: number | null; remind_set_at: number | null; nudged: number; waiting_dismissed_at: number | null; brief: string | null }>): Promise<void> {
+  await p.patchThreadState(accountId, threadId, patch);
 }
 
-export async function getBrief(accountId: string, threadId: string): Promise<string | null> {
-  const row = await persist().getThreadState(accountId, threadId);
+export async function getBrief(p: MailboxPersist, accountId: string, threadId: string): Promise<string | null> {
+  const row = await p.getThreadState(accountId, threadId);
   return row?.brief ?? null;
 }
 
 /** Apply a transformation to every message of the given threads and persist
  *  the result in one batched pass, so an action costs a handful of store
  *  round trips no matter how many threads it touches. */
-export async function applyLocal(accountId: string, me: string, threadIds: string[], fn: (m: MessageMeta) => MessageMeta | null): Promise<void> {
+export async function applyLocal(p: MailboxPersist, accountId: string, me: string, threadIds: string[], fn: (m: MessageMeta) => MessageMeta | null): Promise<void> {
   if (!threadIds.length) return;
-  const metasPerThread = await Promise.all(threadIds.map((t) => threadMetas(accountId, t)));
+  const metasPerThread = await Promise.all(threadIds.map((t) => threadMetas(p, accountId, t)));
   const changed = metasPerThread.flatMap((metas) => metas.map(fn).filter((m): m is MessageMeta => !!m));
-  if (changed.length) await upsertMessages(accountId, me, changed);
+  if (changed.length) await upsertMessages(p, accountId, me, changed);
 }
 
-export async function localSearch(accountId: string, q: string, limit = 50): Promise<ThreadSummary[]> {
+export async function localSearch(p: MailboxPersist, accountId: string, q: string, limit = 50): Promise<ThreadSummary[]> {
   const terms = q
     .replace(/["*():^]/g, " ")
     .split(/\s+/)
     .filter((t) => t && !t.includes(":"))
     .map((t) => t.toLowerCase());
   if (!terms.length) return [];
-  const rows = await persist().listRecentMessages(accountId, MAX_SEARCH_SCAN);
+  const rows = await p.listRecentMessages(accountId, MAX_SEARCH_SCAN);
   const hits = new Map<string, number>();
   for (const r of rows) {
     const hay = r.search_text || `${r.subject} ${r.from_name} ${r.from_email} ${r.snippet}`.toLowerCase();
     if (terms.every((t) => hay.includes(t))) hits.set(r.thread_id, Math.max(hits.get(r.thread_id) ?? 0, r.date_ms));
   }
   const ids = [...hits.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([id]) => id);
-  return summariesFor(accountId, ids);
+  return summariesFor(p, accountId, ids);
 }
 
 const contactCache = new Map<string, { at: number; list: Contact[] }>();
 
-export async function contacts(accountId: string, me: string, q: string, limit = 8): Promise<Contact[]> {
+export async function contacts(p: MailboxPersist, accountId: string, me: string, q: string, limit = 8): Promise<Contact[]> {
   let entry = contactCache.get(accountId);
   if (!entry || Date.now() - entry.at > 5 * 60_000) {
     const map = new Map<string, Contact>();
-    const add = (p: Person, w: number) => {
-      if (!p.email || p.email === me || isRobot(p.email)) return;
-      const c = map.get(p.email) ?? { name: p.name, email: p.email, count: 0 };
+    const add = (person: Person, w: number) => {
+      if (!person.email || person.email === me || isRobot(person.email)) return;
+      const c = map.get(person.email) ?? { name: person.name, email: person.email, count: 0 };
       c.count += w;
-      if (p.name && p.name !== p.email && (c.name === c.email || c.name.length < p.name.length)) c.name = p.name;
-      map.set(p.email, c);
+      if (person.name && person.name !== person.email && (c.name === c.email || c.name.length < person.name.length)) c.name = person.name;
+      map.set(person.email, c);
     };
-    const rows = await persist().listRecentMessages(accountId, MAX_SEARCH_SCAN);
+    const rows = await p.listRecentMessages(accountId, MAX_SEARCH_SCAN);
     for (const r of rows) {
       const sent = r.folders.includes(",SENT,") || r.from_email === me;
       if (sent) {
-        for (const p of JSON.parse(r.to_json) as Person[]) add(p, 3);
-        for (const p of JSON.parse(r.cc_json) as Person[]) add(p, 2);
+        for (const person of JSON.parse(r.to_json) as Person[]) add(person, 3);
+        for (const person of JSON.parse(r.cc_json) as Person[]) add(person, 2);
       } else {
         add({ name: r.from_name, email: r.from_email }, 1);
       }

@@ -21,7 +21,7 @@ interface GoogleTokenResponse {
 }
 
 function requireCredentials(needSecret: boolean): { clientId: string; clientSecret: string } {
-  const { clientId, clientSecret } = config.google;
+  const { clientId, clientSecret } = config().google;
   const missing: string[] = [];
   if (!clientId) missing.push("GOOGLE_CLIENT_ID");
   if (needSecret && !clientSecret) missing.push("GOOGLE_CLIENT_SECRET");
@@ -29,7 +29,7 @@ function requireCredentials(needSecret: boolean): { clientId: string; clientSecr
     throw new Error(
       `Google sign-in is not configured: set ${missing.join(" and ")} in the environment ` +
         `(create an OAuth client of type "Web application" in Google Cloud Console and add ` +
-        `${redirectUri("google")} as an authorized redirect URI).`,
+        `${redirectUri(config(), "google")} as an authorized redirect URI).`,
     );
   }
   return { clientId, clientSecret };
@@ -39,7 +39,7 @@ export function googleAuthUrl(opts: { state: string; codeChallenge: string; logi
   const { clientId } = requireCredentials(false);
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri("google"),
+    redirect_uri: redirectUri(config(), "google"),
     response_type: "code",
     scope: GOOGLE_SCOPES.join(" "),
     access_type: "offline",
@@ -103,7 +103,7 @@ export async function googleExchangeCode(code: string, codeVerifier: string): Pr
     code_verifier: codeVerifier,
     client_id: clientId,
     client_secret: clientSecret,
-    redirect_uri: redirectUri("google"),
+    redirect_uri: redirectUri(config(), "google"),
   });
   return toTokenSet(json, null);
 }

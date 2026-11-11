@@ -1,6 +1,10 @@
+// In-memory Persist used by tests (and the demo-without-anything flow in
+// the test harness). Implements the full combined Persist surface.
 import { MAX_BODIES_PER_ACCOUNT, MAX_MESSAGES_PER_ACCOUNT, MAX_SEARCH_SCAN, MAX_THREADS_PER_ACCOUNT } from "./limits";
 import type {
   AccountPersistRow,
+  AuthPersist,
+  MailboxPersist,
   MessagePersistRow,
   Persist,
   QueuePersistRow,
@@ -13,28 +17,10 @@ import type { ProviderKind } from "../shared/types";
 
 const key = (accountId: string, id: string) => `${accountId}\0${id}`;
 
-export function createMemoryPersist(): Persist {
+export function createMemoryAuth(): AuthPersist {
   const users = new Map<string, UserRow>();
   const sessions = new Map<string, SessionRow>();
   const accounts = new Map<string, AccountPersistRow>();
-  const messages = new Map<string, MessagePersistRow>();
-  const threads = new Map<string, ThreadPersistRow>();
-  const states = new Map<string, ThreadStateRow>();
-  const bodies = new Map<string, { json: string; accessedAt: number }>();
-  const queue = new Map<string, QueuePersistRow>();
-
-  const emptyState = (accountId: string, threadId: string): ThreadStateRow => ({
-    account_id: accountId,
-    thread_id: threadId,
-    pinned: 0,
-    snoozed_until: null,
-    remind_at: null,
-    remind_set_at: null,
-    nudged: 0,
-    waiting_dismissed_at: null,
-    brief: null,
-  });
-
   return {
     async insertUser(row) {
       users.set(row.id, row);
@@ -55,6 +41,9 @@ export function createMemoryPersist(): Persist {
     async deleteSession(id) {
       sessions.delete(id);
     },
+    async purgeExpiredSessions(now) {
+      for (const [id, s] of sessions) if (s.expires_at < now) sessions.delete(id);
+    },
     async putAccount(row) {
       accounts.set(row.id, row);
     },
@@ -67,13 +56,47 @@ export function createMemoryPersist(): Persist {
     async findAccountByIdentity(provider: ProviderKind, email: string) {
       return [...accounts.values()].find((a) => a.provider === provider && a.email === email) ?? null;
     },
-    async findAccountByUserIdentity(userId, provider, email) {
+    async findAccountByUserIdentity(userId, provider: ProviderKind, email: string) {
       return [...accounts.values()].find((a) => a.user_id === userId && a.provider === provider && a.email === email) ?? null;
     },
-    async removeAccount(id) {
+    async deleteAccount(id) {
       accounts.delete(id);
-      await this.wipeIndex(id);
     },
+    async updateAccountTokens(id, tokens) {
+      const row = accounts.get(id);
+      if (row) accounts.set(id, { ...row, tokens });
+    },
+    async updateAccountCursor(id, cursor) {
+      const row = accounts.get(id);
+      if (row) accounts.set(id, { ...row, cursor });
+    },
+    async updateAccountSync(id, sync) {
+      const row = accounts.get(id);
+      if (row) accounts.set(id, { ...row, sync });
+    },
+  };
+}
+
+export function createMemoryMailbox(): MailboxPersist {
+  const messages = new Map<string, MessagePersistRow>();
+  const threads = new Map<string, ThreadPersistRow>();
+  const states = new Map<string, ThreadStateRow>();
+  const bodies = new Map<string, { json: string; accessedAt: number }>();
+  const queue = new Map<string, QueuePersistRow>();
+
+  const emptyState = (accountId: string, threadId: string): ThreadStateRow => ({
+    account_id: accountId,
+    thread_id: threadId,
+    pinned: 0,
+    snoozed_until: null,
+    remind_at: null,
+    remind_set_at: null,
+    nudged: 0,
+    waiting_dismissed_at: null,
+    brief: null,
+  });
+
+  return {
     async putMessages(rows) {
       const prev: { id: string; thread_id: string }[] = [];
       for (const row of rows) {
@@ -159,8 +182,7 @@ export function createMemoryPersist(): Persist {
       );
     },
     async getBody(accountId, messageId) {
-      const row = bodies.get(key(accountId, messageId));
-      return row?.json ?? null;
+      return bodies.get(key(accountId, messageId))?.json ?? null;
     },
     async putBody(accountId, messageId, json) {
       bodies.set(key(accountId, messageId), { json, accessedAt: Date.now() });
@@ -192,6 +214,14 @@ export function createMemoryPersist(): Persist {
     async dueQueue(now) {
       return [...queue.values()].filter((r) => r.status === "queued" && r.send_at <= now).sort((a, b) => a.send_at - b.send_at);
     },
+    async nextQueueWake(now) {
+      let next: number | null = null;
+      for (const r of queue.values()) {
+        if (r.status !== "queued") continue;
+        if (r.send_at > now && (next === null || r.send_at < next)) next = r.send_at;
+      }
+      return next;
+    },
     async listQueueForAccounts(accountIds, since) {
       const set = new Set(accountIds);
       return [...queue.values()]
@@ -199,8 +229,23 @@ export function createMemoryPersist(): Persist {
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, 50);
     },
+    async listQueueForAccount(accountId, since) {
+      return [...queue.values()]
+        .filter((r) => r.account_id === accountId && (r.status === "queued" || r.status === "sending" || r.status === "failed" || r.created_at > since))
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, 50);
+    },
     async requeueSending() {
       for (const [id, row] of queue) if (row.status === "sending") queue.set(id, { ...row, status: "queued" });
     },
+    async purgeOldQueue(cutoffMs) {
+      for (const [id, row] of queue) {
+        if ((row.status === "sent" || row.status === "cancelled") && row.created_at < cutoffMs) queue.delete(id);
+      }
+    },
   };
+}
+
+export function createMemoryPersist(): Persist {
+  return { ...createMemoryAuth(), ...createMemoryMailbox() };
 }

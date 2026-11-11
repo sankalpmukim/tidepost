@@ -10,17 +10,17 @@ export const MICROSOFT_SCOPES = "openid profile email offline_access User.Read M
 const REAUTH_ERRORS = new Set(["invalid_grant", "interaction_required", "consent_required", "login_required"]);
 
 function authority(): string {
-  const tenant = encodeURIComponent(config.microsoft.tenant || "common");
+  const tenant = encodeURIComponent(config().microsoft.tenant || "common");
   return `https://login.microsoftonline.com/${tenant}/oauth2/v2.0`;
 }
 
 function requireClient(): { clientId: string; clientSecret: string } {
-  const { clientId, clientSecret } = config.microsoft;
+  const { clientId, clientSecret } = config().microsoft;
   const missing = [!clientId && "MICROSOFT_CLIENT_ID", !clientSecret && "MICROSOFT_CLIENT_SECRET"].filter(Boolean);
   if (missing.length) {
     throw new Error(
       `Microsoft sign-in is not configured: set ${missing.join(" and ")} in the server environment ` +
-        `(register a web app in Microsoft Entra ID with redirect URI ${redirectUri("microsoft")}).`,
+        `(register a web app in Microsoft Entra ID with redirect URI ${redirectUri(config(), "microsoft")}).`,
     );
   }
   return { clientId, clientSecret };
@@ -31,7 +31,7 @@ export function microsoftAuthUrl(opts: { state: string; codeChallenge: string; l
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
-    redirect_uri: redirectUri("microsoft"),
+    redirect_uri: redirectUri(config(), "microsoft"),
     response_mode: "query",
     scope: MICROSOFT_SCOPES,
     code_challenge: opts.codeChallenge,
@@ -107,7 +107,7 @@ export async function microsoftExchangeCode(code: string, codeVerifier: string):
     client_secret: clientSecret,
     grant_type: "authorization_code",
     code,
-    redirect_uri: redirectUri("microsoft"),
+    redirect_uri: redirectUri(config(), "microsoft"),
     code_verifier: codeVerifier,
     scope: MICROSOFT_SCOPES,
   });

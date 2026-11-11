@@ -12,3 +12,4 @@ api/index.js.bundle
 .agents/
 .claude/
 !.env.example
+.wrangler/

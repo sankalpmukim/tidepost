@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Message, ThreadSummary } from "../shared/types";
+import { initConfig, resetConfigForTest } from "../server/config";
 
 interface Captured { headers: http.IncomingHttpHeaders; body: Record<string, unknown> }
 const captured: Captured[] = [];
@@ -27,6 +28,8 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  resetConfigForTest();
+  initConfig({ ANTHROPIC_API_KEY: "test-key", TIDEPOST_AI_MODEL: "claude-opus-5-5" });
 });
 
 afterAll(() => server.close());

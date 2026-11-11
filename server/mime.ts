@@ -164,12 +164,14 @@ function quoteParam(v: string): string {
 
 /** RFC 2231 extended-value percent encoding (attr-char set). */
 function rfc2231Encode(v: string): string {
-  return Array.from(Buffer.from(v, "utf8"))
-    .map((b) => {
-      const c = String.fromCharCode(b);
-      return /[A-Za-z0-9!#$&+\-.^_`|~]/.test(c) ? c : "%" + b.toString(16).toUpperCase().padStart(2, "0");
-    })
-    .join("");
+  const bytes = Buffer.from(v, "utf8");
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]!;
+    const c = String.fromCharCode(b);
+    out += /[A-Za-z0-9!#$&+\-.^_`|~]/.test(c) ? c : "%" + b.toString(16).toUpperCase().padStart(2, "0");
+  }
+  return out;
 }
 
 /**

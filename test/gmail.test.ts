@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { config } from "../server/config";
+import { config, initConfig } from "../server/config";
+initConfig({ APP_URL: "http://localhost:5173" });
 import { googleAuthUrl, googleExchangeCode, googleIdentityFromIdToken, googleRefresh } from "../server/auth/google";
 import { GmailProvider, gmailMessageToMeta } from "../server/providers/gmail";
 import { AuthExpiredError, type RawOutgoing, type TokenSource } from "../server/providers/types";
@@ -741,14 +742,14 @@ describe("send", () => {
 // ---------- OAuth ----------
 
 describe("Google OAuth", () => {
-  const saved = { ...config.google };
+  const saved = { ...config().google };
   beforeEach(() => {
-    config.google.clientId = "123-abc.apps.googleusercontent.com";
-    config.google.clientSecret = "GOCSPX-secret";
+    config().google.clientId = "123-abc.apps.googleusercontent.com";
+    config().google.clientSecret = "GOCSPX-secret";
   });
   afterEach(() => {
-    config.google.clientId = saved.clientId;
-    config.google.clientSecret = saved.clientSecret;
+    config().google.clientId = saved.clientId;
+    config().google.clientSecret = saved.clientSecret;
   });
 
   it("builds the authorization URL with PKCE and offline access", () => {
@@ -756,7 +757,7 @@ describe("Google OAuth", () => {
     expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     const q = url.searchParams;
     expect(q.get("client_id")).toBe("123-abc.apps.googleusercontent.com");
-    expect(q.get("redirect_uri")).toBe(`${config.appUrl}/api/auth/google/callback`);
+    expect(q.get("redirect_uri")).toBe(`${config().appUrl}/api/auth/google/callback`);
     expect(q.get("response_type")).toBe("code");
     expect(q.get("scope")).toBe("openid email profile https://www.googleapis.com/auth/gmail.modify");
     expect(q.get("access_type")).toBe("offline");
@@ -769,7 +770,7 @@ describe("Google OAuth", () => {
   });
 
   it("explains missing credentials", () => {
-    config.google.clientId = "";
+    config().google.clientId = "";
     expect(() => googleAuthUrl({ state: "s", codeChallenge: "c" })).toThrow(/GOOGLE_CLIENT_ID/);
   });
 
@@ -789,7 +790,7 @@ describe("Google OAuth", () => {
     expect(form.get("code")).toBe("4/0code");
     expect(form.get("code_verifier")).toBe("verifier123");
     expect(form.get("client_secret")).toBe("GOCSPX-secret");
-    expect(form.get("redirect_uri")).toBe(`${config.appUrl}/api/auth/google/callback`);
+    expect(form.get("redirect_uri")).toBe(`${config().appUrl}/api/auth/google/callback`);
   });
 
   it("keeps the old refresh token when Google does not return a new one", async () => {

@@ -1,8 +1,7 @@
 // End-to-end check against the demo mailbox in headless Chromium.
 // Builds nothing: run `npm run build` first. Usage: node scripts/verify.mjs [--shots=dir] [--keep]
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
 
@@ -11,10 +10,22 @@ const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
 const shots = args.shots ? path.resolve(String(args.shots)) : null;
 if (shots) fs.mkdirSync(shots, { recursive: true });
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tidepost-e2e-"));
 
-const server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
-  env: { ...process.env, NODE_ENV: "production", PORT: String(PORT), APP_URL: BASE, TIDEPOST_DATA_DIR: dataDir, TIDEPOST_SECRET: process.env.TIDEPOST_SECRET || "e2e", ANTHROPIC_API_KEY: "", GOOGLE_CLIENT_ID: "", MICROSOFT_CLIENT_ID: "" },
+// Local D1 state lives under .wrangler/state; apply the schema first.
+const mig = spawnSync("npx", ["wrangler", "d1", "migrations", "apply", "tidepost", "--local"], { encoding: "utf8" });
+if (mig.status !== 0) {
+  console.log("D1 migrations failed:\n" + (mig.stdout || "") + (mig.stderr || ""));
+  process.exit(1);
+}
+
+const server = spawn("npx", [
+  "wrangler", "dev",
+  "--port", String(PORT),
+  "--var", `APP_URL:${BASE}`,
+  "--var", `TIDEPOST_SECRET:${process.env.TIDEPOST_SECRET || "e2e"}`,
+  "--var", "TIDEPOST_DEMO:1",
+], {
+  env: { ...process.env, ANTHROPIC_API_KEY: "", GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "", MICROSOFT_CLIENT_ID: "", MICROSOFT_CLIENT_SECRET: "" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverLog = "";
@@ -41,7 +52,7 @@ async function shot(name) {
   if (shots) await page.screenshot({ path: path.join(shots, `${name}.png`) });
 }
 
-for (let i = 0; i < 60; i++) {
+for (let i = 0; i < 240; i++) {
   try {
     const r = await fetch(`${BASE}/api/config`);
     if (r.ok) break;
@@ -368,7 +379,7 @@ await step("no console errors", async () => {
 });
 
 await browser.close();
-server.kill();
+server.kill("SIGTERM");
 console.log(`Lane sizes (rows rendered): ${JSON.stringify(laneCounts)}`);
 console.log(results.join("\n"));
 if (failed) {
@@ -377,4 +388,3 @@ if (failed) {
 } else {
   console.log("\nAll checks passed.");
 }
-if (!args.keep) fs.rmSync(dataDir, { recursive: true, force: true });

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { useQuery as useConvexQuery } from "convex/react";
-import { api as convexApi } from "../convex/_generated/api";
 import { api, ApiError } from "./api";
 import { LEAVES_VIEW, projectThreadList, rollbackAction, stageAction, useOptimisticRevision } from "./optimistic";
 import { getUi, setUi, toast, useUi, type UndoEntry } from "./store";
 import type { Account, QueuedSend, Run, Settings, Thread, ThreadAction, ThreadPage, ThreadSummary } from "../shared/types";
+
+/** How often purely time-based lanes (Waiting's 30-day window, due snoozes)
+ *  re-evaluate. The old Convex subscriptions re-ran on a 30s client tick. */
+const LANE_REFRESH_MS = 30_000;
 
 export function useNow(): number {
   const [now, setNow] = useState(Date.now());
@@ -20,19 +22,6 @@ export function useConfig() {
   return useQuery({ queryKey: ["config"], queryFn: api.config, staleTime: Infinity });
 }
 
-const EMPTY_ME = {
-  accounts: [] as Account[],
-  settings: {
-    undoSendSeconds: 10,
-    signature: "",
-    density: "comfortable" as const,
-    loadRemoteImages: "ask" as const,
-    theme: "system" as const,
-    readingPane: "right" as const,
-    onboardedAt: 0,
-  },
-};
-
 export function useMe(): {
   data: { accounts: Account[]; settings: Settings } | undefined;
   isLoading: boolean;
@@ -40,13 +29,14 @@ export function useMe(): {
   error: Error | null;
   refetch: () => Promise<unknown>;
 } {
-  const data = useConvexQuery(convexApi.live.me);
+  // Sync state changes arrive as "sync" SSE events which invalidate ["me"].
+  const q = useQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 5_000, refetchInterval: 60_000 });
   return {
-    data: data === undefined ? undefined : (data ?? EMPTY_ME),
-    isLoading: data === undefined,
-    isPending: data === undefined,
-    error: null,
-    refetch: async () => data,
+    data: q.data,
+    isLoading: q.isLoading,
+    isPending: q.isPending,
+    error: q.error,
+    refetch: q.refetch,
   };
 }
 
@@ -57,13 +47,34 @@ export function useAccount(): Account | null {
 }
 
 export function useCounts(aid: string | null) {
-  const now = useNow();
-  const data = useConvexQuery(convexApi.live.counts, aid ? { accountId: aid, now } : "skip");
-  return { data: data ?? undefined, isLoading: aid ? data === undefined : false };
+  const q = useQuery({
+    queryKey: ["counts", aid],
+    queryFn: () => api.counts(aid!),
+    enabled: !!aid,
+    staleTime: 5_000,
+    refetchInterval: LANE_REFRESH_MS,
+  });
+  return { data: q.data, isLoading: aid ? q.isLoading : false };
 }
 
 export function useFolders(aid: string | null) {
   return useQuery({ queryKey: ["folders", aid], queryFn: () => api.folders(aid!), enabled: !!aid, staleTime: 120_000 });
+}
+
+/** Fetch every page of a lane so the virtualized list sees the full set,
+ *  exactly like the old live query did (server caps threads at 600). */
+async function fetchAllThreads(aid: string, view: string): Promise<ThreadPage> {
+  let cursor: string | null = null;
+  const threads: ThreadSummary[] = [];
+  let total = 0;
+  for (let page = 0; page < 5; page++) {
+    const p = await api.threads(aid, view, cursor);
+    threads.push(...p.threads);
+    total = p.total;
+    if (!p.nextCursor) break;
+    cursor = p.nextCursor;
+  }
+  return { threads, nextCursor: null, total };
 }
 
 let lastVisibleIds: string[] = [];
@@ -74,13 +85,15 @@ export function liveSummaries(): ThreadSummary[] {
 }
 
 export function useThreads(aid: string | null, view: string, search: string) {
-  const now = useNow();
   // Re-render when optimistic entries change so the list moves with actions.
   useOptimisticRevision();
-  const live = useConvexQuery(
-    convexApi.live.threads,
-    aid && view !== "search" ? { accountId: aid, view, now } : "skip",
-  );
+  const list = useQuery({
+    queryKey: ["threads", aid, view],
+    queryFn: () => fetchAllThreads(aid!, view),
+    enabled: !!aid && view !== "search",
+    staleTime: 5_000,
+    refetchInterval: LANE_REFRESH_MS,
+  });
   const remote = useInfiniteQuery({
     queryKey: ["search", aid, search],
     queryFn: async (): Promise<ThreadPage> => api.search(aid!, search),
@@ -90,15 +103,16 @@ export function useThreads(aid: string | null, view: string, search: string) {
     staleTime: 15_000,
   });
   if (view === "search") return remote;
-  const isLoading = live === undefined;
-  if (live && aid) {
-    const { threads: shown, hidden } = projectThreadList(aid, view, live.threads);
+  const isLoading = list.isPending;
+  const data = list.data;
+  if (data && aid) {
+    const { threads: shown, hidden } = projectThreadList(aid, view, data.threads);
     lastVisibleIds = shown.map((t) => t.id);
     lastThreadSummaries = shown;
-    const projected: ThreadPage = { threads: shown, total: Math.max(0, live.total - hidden), nextCursor: null };
+    const projected: ThreadPage = { threads: shown, total: Math.max(0, data.total - hidden), nextCursor: null };
     return {
-      data: { pages: [projected], pageParams: [null] },
-      isFetching: isLoading,
+      data: { pages: [projected], pageParams: [null] } as InfiniteData<ThreadPage, string | null>,
+      isFetching: list.isFetching,
       isPending: isLoading,
       isLoading,
       hasNextPage: false,
@@ -108,7 +122,7 @@ export function useThreads(aid: string | null, view: string, search: string) {
   }
   return {
     data: undefined,
-    isFetching: isLoading,
+    isFetching: list.isFetching,
     isPending: isLoading,
     isLoading,
     hasNextPage: false,
@@ -118,12 +132,13 @@ export function useThreads(aid: string | null, view: string, search: string) {
 }
 
 export function useLocalSearch(aid: string | null, q: string, enabled: boolean) {
-  const now = useNow();
-  const data = useConvexQuery(
-    convexApi.live.localSearch,
-    aid && enabled && q.trim().length > 1 ? { accountId: aid, q, now } : "skip",
-  );
-  return { data: data ? { threads: data, nextCursor: null, total: data.length } : undefined, isFetching: enabled && data === undefined };
+  const query = useQuery({
+    queryKey: ["lsearch", aid, q],
+    queryFn: () => api.search(aid!, q, true),
+    enabled: !!aid && enabled && q.trim().length > 1,
+    staleTime: 15_000,
+  });
+  return { data: query.data, isFetching: query.isFetching && !!query.data };
 }
 
 export function useThread(aid: string | null, tid: string | null) {
@@ -145,9 +160,9 @@ export function useRuns() {
 }
 
 export function useSends() {
-  const now = useNow();
-  const data = useConvexQuery(convexApi.live.sends, { now });
-  return { data: data ?? undefined };
+  // Status changes arrive as "send" SSE events which invalidate ["sends"].
+  const q = useQuery({ queryKey: ["sends"], queryFn: api.sends, staleTime: 5_000, refetchInterval: 15_000 });
+  return { data: q.data };
 }
 
 // ---------- live updates ----------
@@ -189,6 +204,13 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
               return i >= 0 ? list.map((r) => (r.id === e.run.id ? e.run : r)) : [e.run, ...list];
             });
             break;
+          case "sync":
+            // Sync state lives on the account rows in /api/me.
+            void qc.invalidateQueries({ queryKey: ["me"] });
+            break;
+          case "send":
+            void qc.invalidateQueries({ queryKey: ["sends"] });
+            break;
           case "folders":
             void qc.invalidateQueries({ queryKey: ["folders", e.accountId] });
             break;
@@ -196,6 +218,8 @@ export function useLiveEvents(onSend: (s: QueuedSend) => void) {
             toast({ text: `${e.message}`, tone: "error", sticky: true, action: { label: "Sign in again", run: () => { window.location.href = "/api/auth/google/start"; } } });
             break;
           case "threads": {
+            void qc.invalidateQueries({ queryKey: ["threads", e.accountId] });
+            void qc.invalidateQueries({ queryKey: ["counts", e.accountId] });
             const open = getUi().openThreadId;
             if (open && e.threadIds.includes(open)) void qc.invalidateQueries({ queryKey: ["thread", e.accountId, open] });
             break;

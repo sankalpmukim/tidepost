@@ -9,11 +9,11 @@ import { config } from "./config";
 import type { Ask, DraftProposal, DraftTone, Message, Plan, PlanStep, ThreadBrief, ThreadSummary } from "../shared/types";
 import { firstSentence } from "./text";
 
-export const aiEnabled = () => !!config.ai.apiKey;
+export const aiEnabled = () => !!config().ai.apiKey;
 
 let client: Anthropic | null = null;
 function anthropic(): Anthropic {
-  if (!client) client = new Anthropic({ apiKey: config.ai.apiKey, maxRetries: 2, timeout: 120_000 });
+  if (!client) client = new Anthropic({ apiKey: config().ai.apiKey, maxRetries: 2, timeout: 120_000 });
   return client;
 }
 
@@ -62,7 +62,7 @@ const BriefSchema = z.object({
 
 export async function aiBrief(summary: ThreadSummary, messages: Message[], me: { name: string; email: string }): Promise<Omit<ThreadBrief, "threadId" | "basis" | "generatedAt">> {
   const response = await anthropic().beta.messages.parse({
-    model: config.ai.model,
+    model: config().ai.model,
     max_tokens: 8000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
@@ -151,7 +151,7 @@ const DraftSchema = z.object({
 export async function aiDraft(opts: { messages: Message[]; me: { name: string; email: string }; notes: string; mode: string; recipients: string[]; subject: string }): Promise<DraftProposal> {
   const recent = opts.messages.slice(-15);
   const response = await anthropic().beta.messages.parse({
-    model: config.ai.model,
+    model: config().ai.model,
     max_tokens: 8000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
@@ -223,7 +223,7 @@ const PlanSchema = z.object({
 
 export async function aiPlan(opts: { summary: ThreadSummary; messages: Message[]; me: { name: string; email: string }; labels: string[]; instruction: string }): Promise<Omit<Plan, "threadId">> {
   const response = await anthropic().beta.messages.parse({
-    model: config.ai.model,
+    model: config().ai.model,
     max_tokens: 8000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",

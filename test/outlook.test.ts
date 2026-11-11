@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { config } from "../server/config";
+import { config, initConfig } from "../server/config";
+initConfig({ APP_URL: "http://localhost:5173" });
 import {
   microsoftAuthUrl,
   microsoftExchangeCode,
@@ -243,21 +244,21 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("microsoft auth", () => {
-  const saved = { ...config.microsoft };
+  const saved = { ...config().microsoft };
   beforeEach(() => {
-    config.microsoft.clientId = "11111111-2222-3333-4444-555555555555";
-    config.microsoft.clientSecret = "s3cr3t~value";
-    config.microsoft.tenant = "common";
+    config().microsoft.clientId = "11111111-2222-3333-4444-555555555555";
+    config().microsoft.clientSecret = "s3cr3t~value";
+    config().microsoft.tenant = "common";
   });
-  afterEach(() => Object.assign(config.microsoft, saved));
+  afterEach(() => Object.assign(config().microsoft, saved));
 
   it("builds the authorize URL with PKCE and the mail scopes", () => {
     const u = new URL(microsoftAuthUrl({ state: "st4te", codeChallenge: "chal_lenge", loginHint: "me@outlook.com" }));
     expect(u.origin + u.pathname).toBe("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
     const p = u.searchParams;
-    expect(p.get("client_id")).toBe(config.microsoft.clientId);
+    expect(p.get("client_id")).toBe(config().microsoft.clientId);
     expect(p.get("response_type")).toBe("code");
-    expect(p.get("redirect_uri")).toBe(`${config.appUrl}/api/auth/microsoft/callback`);
+    expect(p.get("redirect_uri")).toBe(`${config().appUrl}/api/auth/microsoft/callback`);
     expect(p.get("response_mode")).toBe("query");
     expect(p.get("scope")).toBe("openid profile email offline_access User.Read Mail.ReadWrite Mail.Send");
     expect(p.get("code_challenge")).toBe("chal_lenge");
@@ -268,13 +269,13 @@ describe("microsoft auth", () => {
   });
 
   it("uses the configured tenant and explains missing credentials", () => {
-    config.microsoft.tenant = "organizations";
+    config().microsoft.tenant = "organizations";
     expect(microsoftAuthUrl({ state: "s", codeChallenge: "c" })).toMatch(
       /^https:\/\/login\.microsoftonline\.com\/organizations\/oauth2\/v2\.0\/authorize\?/,
     );
-    config.microsoft.clientSecret = "";
+    config().microsoft.clientSecret = "";
     expect(() => microsoftAuthUrl({ state: "s", codeChallenge: "c" })).toThrow(/MICROSOFT_CLIENT_SECRET/);
-    config.microsoft.clientId = "";
+    config().microsoft.clientId = "";
     expect(() => microsoftAuthUrl({ state: "s", codeChallenge: "c" })).toThrow(/MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET/);
   });
 
@@ -299,7 +300,7 @@ describe("microsoft auth", () => {
     expect(form!.get("code")).toBe("M.code123");
     expect(form!.get("code_verifier")).toBe("verifier-xyz");
     expect(form!.get("client_secret")).toBe("s3cr3t~value");
-    expect(form!.get("redirect_uri")).toBe(`${config.appUrl}/api/auth/microsoft/callback`);
+    expect(form!.get("redirect_uri")).toBe(`${config().appUrl}/api/auth/microsoft/callback`);
     expect(form!.get("scope")).toContain("offline_access");
     expect(t.accessToken).toBe("eyJ0eXAi.access");
     expect(t.refreshToken).toBe("M.C5_BAY.refresh-1");

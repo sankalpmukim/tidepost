@@ -1,16 +1,10 @@
 // Full Google sign-in → sync → triage → archive → send, with Google's
-// endpoints mocked at the fetch layer and the real Hono app in between.
+// endpoints mocked at the fetch layer and the real Hono app + Mailbox
+// engines (in-process, memory persistence) in between.
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { createHarness, initTestConfig } from "./harness";
 
-process.env.TIDEPOST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "tidepost-flow-"));
-process.env.TIDEPOST_SECRET = "flow-secret";
-process.env.GOOGLE_CLIENT_ID = "cid.apps.googleusercontent.com";
-process.env.GOOGLE_CLIENT_SECRET = "csecret";
-process.env.APP_URL = "http://localhost:5173";
-process.env.TIDEPOST_POLL_SECONDS = "3600";
+initTestConfig();
 
 const ME = "alex@northwind.example";
 const b64url = (s: string) => Buffer.from(s).toString("base64url");
@@ -42,7 +36,10 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+let h: ReturnType<typeof createHarness>;
+
 beforeAll(() => {
+  h = createHarness();
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const body = typeof init.body === "string" ? init.body : init.body ? String(init.body) : "";
@@ -71,15 +68,14 @@ describe("Google sign-in to send", () => {
   let accountId = "";
 
   it("redirects to Google and completes the callback", async () => {
-    const { app } = await import("../server/app");
-    const start = await app.request("/api/auth/google/start");
+    const start = await h.app.request("/api/auth/google/start");
     expect(start.status).toBe(302);
     const loc = new URL(start.headers.get("location")!);
     const state = loc.searchParams.get("state")!;
     const oauthCookie = start.headers.get("set-cookie")!.split(";")[0];
-    const cb = await app.request(`/api/auth/google/callback?code=authcode&state=${state}`, { headers: { cookie: oauthCookie } });
+    const cb = await h.app.request(`/api/auth/google/callback?code=authcode&state=${state}`, { headers: { cookie: oauthCookie } });
     expect(cb.status).toBe(302);
-    expect(cb.headers.get("location")).toMatch(/^\/app\?account=acc_/);
+    expect(cb.headers.get("location")!).toMatch(/^\/app\?account=acc_/);
     accountId = decodeURIComponent(cb.headers.get("location")!.split("account=")[1]);
     const setCookies = cb.headers.getSetCookie();
     cookie = setCookies.find((c) => c.startsWith("tp_session="))!.split(";")[0];
@@ -89,38 +85,32 @@ describe("Google sign-in to send", () => {
   });
 
   it("indexes the mailbox and puts the direct ask in Needs you", async () => {
-    const { syncNow } = await import("../server/sync");
-    const { app } = await import("../server/app");
-    await syncNow(accountId);
-    const me = await (await app.request("/api/me", { headers: { cookie } })).json() as { accounts: { email: string; provider: string }[] };
+    await h.mailboxes.mailbox(accountId).syncNow();
+    const me = await (await h.app.request("/api/me", { headers: { cookie } })).json() as { accounts: { email: string; provider: string }[] };
     expect(me.accounts[0]).toMatchObject({ email: ME, provider: "gmail" });
-    const page = await (await app.request(`/api/accounts/${accountId}/threads?view=needs`, { headers: { cookie } })).json() as { threads: { id: string; subject: string; lane: string }[] };
+    const page = await (await h.app.request(`/api/accounts/${accountId}/threads?view=needs`, { headers: { cookie } })).json() as { threads: { id: string; subject: string; lane: string }[] };
     expect(page.threads).toHaveLength(1);
     expect(page.threads[0]).toMatchObject({ id: "thr1", subject: "SOW for Q1", lane: "needs" });
   });
 
   it("archives through Gmail batchModify", async () => {
-    const { app } = await import("../server/app");
-    const res = await app.request(`/api/accounts/${accountId}/actions`, {
+    const res = await h.app.request(`/api/accounts/${accountId}/actions`, {
       method: "POST", headers: { cookie, "content-type": "application/json", "x-tidepost": "1" },
       body: JSON.stringify({ threadIds: ["thr1"], action: { type: "archive" } }),
     });
     expect(res.status).toBe(200);
     const modify = calls.find((c) => c.url.pathname.endsWith("/messages/batchModify"))!;
     expect(JSON.parse(modify.body)).toMatchObject({ ids: ["msg1"], removeLabelIds: ["INBOX"] });
-    const needs = await (await app.request(`/api/accounts/${accountId}/threads?view=needs`, { headers: { cookie } })).json() as { threads: unknown[] };
+    const needs = await (await h.app.request(`/api/accounts/${accountId}/threads?view=needs`, { headers: { cookie } })).json() as { threads: unknown[] };
     expect(needs.threads).toHaveLength(0);
   });
 
   it("sends a threaded reply through the queue", async () => {
-    const { app } = await import("../server/app");
-    const { processQueue } = await import("../server/mail");
-    const res = await app.request(`/api/accounts/${accountId}/send?now=1`, {
+    const res = await h.app.request(`/api/accounts/${accountId}/send?now=1`, {
       method: "POST", headers: { cookie, "content-type": "application/json", "x-tidepost": "1" },
       body: JSON.stringify({ to: [{ name: "Priya Nair", email: "priya@contoso.example" }], cc: [], bcc: [], subject: "Re: SOW for Q1", text: "Approved.", attachments: [], mode: "reply", inReplyTo: { messageId: "msg1", threadId: "thr1" }, quotedHtml: null, quotedText: "Could you approve?" }),
     });
     expect(res.status).toBe(200);
-    await processQueue();
     for (let i = 0; i < 20 && !calls.some((c) => c.url.pathname.endsWith("/messages/send")); i++) await new Promise((r) => setTimeout(r, 50));
     const send = calls.find((c) => c.url.pathname.endsWith("/messages/send"))!;
     const payload = JSON.parse(send.body) as { raw: string; threadId: string };
@@ -132,10 +122,9 @@ describe("Google sign-in to send", () => {
   });
 
   it("rejects mutations without the CSRF header and requests without a session", async () => {
-    const { app } = await import("../server/app");
-    const noHeader = await app.request(`/api/accounts/${accountId}/actions`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
+    const noHeader = await h.app.request(`/api/accounts/${accountId}/actions`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
     expect(noHeader.status).toBe(403);
-    const noSession = await app.request(`/api/accounts/${accountId}/threads`);
+    const noSession = await h.app.request(`/api/accounts/${accountId}/threads`);
     expect(noSession.status).toBe(401);
   });
 });

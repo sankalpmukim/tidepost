@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tidepost",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tidepost",
+      "database_id": "bdbd8060-e4d0-4c89-ad08-2cf515fcdd56",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "routes": [
+    { "pattern": "tidepost.sankalpmukim.dev", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "MAILBOX", "class_name": "MailboxDO" },
+      { "name": "HUB", "class_name": "HubDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MailboxDO", "HubDO"] }
+  ],
+  "triggers": {
+    "crons": ["0 */6 * * *"]
+  },
+  "vars": {
+    "APP_URL": "https://tidepost.sankalpmukim.dev",
+    "MICROSOFT_TENANT": "common",
+    "TIDEPOST_AI_MODEL": "claude-opus-5-5",
+    "TIDEPOST_SYNC_MESSAGES": "800",
+    "TIDEPOST_POLL_SECONDS": "45",
+    "TIDEPOST_DEMO": "1"
+  }
+  // Secrets (npx wrangler secret put …): TIDEPOST_SECRET (required),
+  // GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, MICROSOFT_CLIENT_ID,
+  // MICROSOFT_CLIENT_SECRET, ANTHROPIC_API_KEY (optional).
+  // For local dev, put them in .dev.vars (same KEY=value format).
+}
