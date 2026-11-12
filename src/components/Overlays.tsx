@@ -189,9 +189,19 @@ export function SettingsDialog() {
   const me = useMe().data;
   const qc = useQueryClient();
   const [draft, setDraft] = useState<Settings | null>(null);
+  // ["me"] is invalidated by SSE sync events while the dialog is open; only seed
+  // the draft once per open so unsaved edits aren't clobbered by refetches.
+  const [seeded, setSeeded] = useState(false);
   useEffect(() => {
-    if (open && me) setDraft(me.settings);
-  }, [open, me]);
+    if (!open) {
+      setSeeded(false);
+      return;
+    }
+    if (me && !seeded) {
+      setDraft(me.settings);
+      setSeeded(true);
+    }
+  }, [open, me, seeded]);
   if (!open || !draft || !me) return null;
   const close = () => setUi({ settings: false });
   const save = async () => {
