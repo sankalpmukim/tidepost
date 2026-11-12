@@ -27,6 +27,6 @@ CREATE TABLE IF NOT EXISTS accounts (
   sync TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_identity ON accounts(provider, email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_identity ON accounts(provider, email) WHERE provider != 'demo';
 CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_user_identity ON accounts(user_id, provider, email);
