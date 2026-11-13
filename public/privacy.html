@@ -3,12 +3,103 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Privacy — Tidepost</title>
+    <title>Privacy Policy — Tidepost</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+      h1 { font-size: 1.6rem; }
+      h2 { font-size: 1.15rem; margin-top: 2rem; }
+      p { color: #1f2933; }
+    </style>
   </head>
   <body>
-    <h1>Privacy</h1>
-    <p>Tidepost is a personal email client. Mail is fetched from your Gmail or Microsoft account using OAuth and stored on the server that runs the app so it can show lists, search, and drafts.</p>
-    <p>OAuth tokens are encrypted at rest. Thread text is sent to Anthropic only if an API key is configured and you ask for a brief, draft, or plan.</p>
-    <p>You can disconnect an account at any time from Tidepost settings. Questions: sankalpmukim@gmail.com</p>
+    <h1>Tidepost Privacy Policy</h1>
+    <p>Last updated: November 13, 2026</p>
+    <p>
+      Tidepost ("the app") is an email client hosted at
+      https://tidepost.sankalpmukim.dev and operated by Sankalp Mukim
+      (sankalpmukim@gmail.com, "the operator"). This policy explains how the app
+      accesses, uses, stores, shares, and deletes Google user data.
+    </p>
+
+    <h2>Google user data we access</h2>
+    <p>
+      When you connect a Google account, Tidepost requests the following OAuth
+      scopes:
+    </p>
+    <ul>
+      <li><code>openid</code>, <code>email</code>, <code>profile</code> — your
+        Google account email address, display name, and profile picture URL, used
+        to identify your account inside the app.</li>
+      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — the
+        contents of your Gmail mailbox: message subjects, senders and
+        recipients, message bodies, attachments, labels, and read/unread and
+        draft state. This scope is required for the app's core purpose of
+        displaying, searching, organizing, composing, and sending email on your
+        behalf.</li>
+    </ul>
+
+    <h2>How we use Google user data</h2>
+    <ul>
+      <li><strong>Mail list, search, and reading.</strong> Message metadata and
+        bodies are fetched from Gmail and indexed so the app can show your
+        inbox, threads, and search results quickly.</li>
+      <li><strong>Sending and organizing.</strong> The app composes, replies
+        to, drafts, and sends email through Gmail, and syncs read/unread state,
+        labels, and deletions back to your mailbox.</li>
+      <li><strong>Assisted writing (optional).</strong> If you configure an
+        Anthropic API key, thread text you explicitly select may be sent to
+        Anthropic solely to generate a brief, draft, or plan you requested.
+        This is off unless you enable it.</li>
+    </ul>
+    <p>
+      Google user data is not used for advertising, profiling, or training any
+      AI/ML model. The app requests only the scopes needed for the features
+      above.
+    </p>
+
+    <h2>Sharing with third parties</h2>
+    <p>
+      Tidepost does not sell, rent, or share your Google user data with
+      third parties. The only third party that may process your data is:
+    </p>
+    <ul>
+      <li><strong>Anthropic</strong> — and only if you explicitly configure an
+        Anthropic API key and request an AI-assisted brief, draft, or plan.
+        Only the thread text needed for that request is sent.</li>
+    </ul>
+    <p>
+      Infrastructure providers (Cloudflare, which hosts the app) process data
+      solely to operate the service. Google itself continues to process your
+      mailbox under your Google account settings.
+    </p>
+
+    <h2>Storage and protection</h2>
+    <ul>
+      <li>Mail index and account data are stored in the app's server-side
+        storage (Cloudflare D1 database and Durable Objects), accessible only to
+        your logged-in session.</li>
+      <li>OAuth refresh tokens are encrypted at rest.</li>
+      <li>All traffic to and from the app is served over HTTPS.</li>
+      <li>Each connected mailbox's data is isolated per user account; no data
+        is shared across user accounts.</li>
+    </ul>
+
+    <h2>Retention and deletion</h2>
+    <ul>
+      <li>Your mail index is retained only while your account is connected, so
+        the app can keep showing your mailbox. It is not kept after you
+        disconnect.</li>
+      <li>You can delete your data at any time: disconnect an account (or
+        delete your Tidepost account) from the app's settings. This removes the
+        stored mail index and stored OAuth tokens from the app's storage. It
+        does not delete anything from your Gmail mailbox itself.</li>
+      <li>To request deletion or a copy of your data, email
+        sankalpmukim@gmail.com and it will be handled promptly.</li>
+    </ul>
+
+    <h2>Contact</h2>
+    <p>
+      Questions about this policy or your data: sankalpmukim@gmail.com.
+    </p>
   </body>
 </html>
